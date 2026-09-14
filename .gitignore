@@ -1,0 +1,18 @@
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+
+# ===== PyInstaller 打包产物 =====
+build/
+dist/
+*.toc
+*.pyz
+*.pkg
+
+# ===== 本机运行时配置（程序首次运行会自动生成，别传上去）=====
+config.json
+
+# ===== 系统 / 编辑器杂项 =====
+.DS_Store
+Thumbs.db
+*.log

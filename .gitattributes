@@ -1,0 +1,11 @@
+# 统一换行符：文本按 Git 规则自动处理，Python 用 LF，bat 用 CRLF
+* text=auto
+*.py text eol=lf
+*.txt text eol=lf
+*.md  text eol=lf
+*.bat text eol=crlf
+
+# 二进制文件（不做换行转换）
+*.png  binary
+*.exe  binary
+*.zip  binary
