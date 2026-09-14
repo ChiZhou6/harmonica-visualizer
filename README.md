@@ -115,15 +115,58 @@ python _pack_release.py        # 在 D:\AI\DF Harmonica\ 下
 颜色与灯带一致：暖白=本音、绿=降调、紫=半音、蓝=升调、黄=半音+降调、红=半音+升调。
 （v5 的圆形徽章 ♪/b/#/^ 已按用户要求去掉——音调信息由颜色承载。）
 
-## 工作方式（v6 起只有一种：堆叠消除）
+## 工作方式（v8.2 起两种模式，Shift+F5 或面板按钮切换）
+
+### 经典模式（默认：堆叠消除）
 
 音符块不自动下落，全部从下往上堆叠；最靠近灯带的那个块带白描边（当前目标），
 按下它对应的按键即可消除它，随后整叠音符平滑下落一层（160ms 缓动），继续下一个。
 不需要精确节奏与时长，玩家自己掌握节拍，**导入曲谱也最简单**——只要按顺序记录音符。
 按错键时该通道灯带上方闪一道红作为提示（300ms 淡出）。
+**消除碰撞特效**：按对的一瞬间，灯带上泛起一圈同色光晕并扩散淡出（约 0.32s，
+径向渐变 + 扩散细环），长音整块消失时也能明确看到"消在这里"。
 弹完显示「演奏完成」，1.2 秒后自动从头开始（`loop=false` 可关闭）。
 
-> v6 移除了跟随模式（自动下落 / BPM / 倍速）与"放慢 / 加快"热键，只保留此模式。
+### 跟随演奏模式（v8.2 新增 / v8.3 长音按住，音游式）
+
+为带完整节奏标注的曲谱设计（如 Dr-hydra 曲谱库的谱面）。音符块按
+`BPM + 每音拍数` 换算成真实时间从上方下落，落到底部判定线（灯带）的瞬间即该音的起音时刻。
+
+状态机：`idle 待命 → countdown 倒计时 → playing 演奏 → done`
+
+- **idle**：切到跟随模式后不自动开始。第一个音静止在判定线上方 `follow_lead` 秒处并高亮，
+  提示「弹对第一个音开始」；玩家按对第一个音的键即触发倒计时（这次点击不消除任何块）。
+- **countdown**：窗口中央大数字倒计时 `countdown_seconds`（默认 3）秒；期间按键不判定。
+- **playing**：音符下落。按对（键位一致且时刻差 ≤ `follow_window`）→ 消除 + 通道闪光
+  + 判定线上的碰撞光晕（同经典模式）；超过窗口仍未按 → 标记 miss（音符变暗落走、
+  指针前进，节奏不中断）。
+- **长音：按住才消（v8.3）**：时值 ≥ `hold_min_beats`（默认 1.5 拍）的音，按下后**不立即消除**，
+  进入 `follow_hold = {"idx","ch","state","start","dur","released"}`：
+  矩形继续自然下落，被判定线一点点吃掉（靠判定线上方的裁剪 + 亮描边 + 判定线上同步收缩的同色光带提示），
+  按满 `dur * spb` 秒才真正消除并放碰撞光晕；中途松手超过 `hold_grace`（默认 0.2s）→ 中断，
+  剩余部分进 `follow_fade` 继续变暗落走 + 通道红闪。按住期间该音不判 miss、其他按键被忽略；
+  `keyboard_monitor=false` 读不到按住状态时一律视为按住（避免长音永远完不成）。
+  漏掉（miss）的音也进 `follow_fade`，继续变暗落走而非凭空消失。**经典模式不受影响**，仍是按一下即消。
+- 时间对齐：idle/countdown 把第一个音钉在判定线上方 lead 秒处（有前奏的曲子前奏被压缩），
+  倒计时结束进入 playing 时从该位置平滑续接；小节边界精确，小节内休止按连续近似。
+
+可调参数（config.json）：`mode` / `follow_speed`（下落速度 px/s，默认 200）/
+`follow_lead`（默认 2.0s）/ `follow_window`（判定窗口，默认 0.20s）/
+`hold_min_beats`（多长算长音，默认 1.5 拍，调 999 = 全部按一下即消）/ `hold_grace`（松手宽限，默认 0.2s）/
+`countdown_seconds`（默认 3）。
+
+> v6 移除了自动下落模式；v8.2 借助 Dr-hydra 谱面的节奏信息把它重新做了回来。
+
+## 曲谱格式（两种，自动识别）
+
+1. **自带简谱格式**：`TITLE=` / `BPM=` 头 + 数字简谱（详见 `使用说明.txt`）。
+2. **Dr-hydra 曲谱库格式（v8.2 新增）**：GitHub 项目
+   [Dr-hydra/Delta-Force-Harmonica](https://github.com/Dr-hydra/Delta-Force-Harmonica)
+   导出的"人可演奏版文本谱"——每小节含「简谱 / 键位 / 节奏」三行，键位为
+   `Z X C V B N M ,` + 修饰标记 `+`(升调) `-`(降调) `#`(半音)。
+   解析入口 `parse_dfh_tab()`，由 `is_dfh_tab()` 自动识别（含「键位标记」行即命中）。
+   节奏列按 `durationLabel` 的逆映射还原成拍数（`4`=1拍、`8`=0.5拍、`·`=附点 ×1.5、
+   `Xb`=直接读数字拍）。文本谱不含休止位置，小节内按音符连续近似、小节边界精确。
 
 ## 8 个通道的按键映射
 
@@ -148,17 +191,18 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\pythonw.exe harmonica_vis
 
 | 热键 | 功能 |
 |------|------|
-| Shift+F5 | **把刚录的曲谱存进曲谱库（静默）** |
-| **Shift+F6 / Shift+F4** | **一键隐藏 / 恢复「全部窗口」（游戏中临时让开视野）** |
+| Shift+F3 | **把刚录的曲谱存进曲谱库（静默）** |
+| **Shift+F6** | **一键隐藏 / 恢复「全部窗口」（游戏中临时让开视野）** |
 | Shift+F7 | 切换下一首曲谱 |
 | Shift+F8 | 锁定 / 调整模式 |
 | Shift+F9 | 从头重来 |
+| Shift+F5 | 切换 经典模式 / 跟随演奏模式（v8.2） |
 | Shift+F10 | 面板可点击 / 面板也鼠标穿透 |
 | Shift+F11 | 打开 / 关闭【添加 / 编辑曲谱】窗口 |
 | Shift+F12 | 开始 / 结束 录音 |
 | Ctrl+Alt+Q | 退出 |
 
-⚠️ **F 区热键一律加 `Shift` 前缀（Shift+F4 ~ Shift+F12）**：游戏里也常用 F4~F12，
+⚠️ **F 区热键一律加 `Shift` 前缀（Shift+F3 / Shift+F5 ~ Shift+F12）**：游戏里也常用 F4~F12，
 不加修饰键会抢键 / 误触发。裸按 F4~F12 时本程序毫无反应 —— 这正是防冲突的设计。
 
 ⚠️ 热键读取的是**物理按键状态**，若键盘 F 区被 Fn 锁定为媒体键，请改用面板按钮（按钮不依赖键盘）。
@@ -169,7 +213,7 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\pythonw.exe harmonica_vis
 `Overlay.hk(action)`，**从 config 现取** → 改 `config.json` 后界面提示自动跟着变，
 不会再出现"按钮写着 F6、实际要按 Shift+F6"这种对不上的情况（v8 修）。
 
-- `format_combo("shift+f6") -> "Shift+F6"`；`format_hotkey("shift+f6|shift+f4") -> "Shift+F6/Shift+F4"`
+- `format_combo("shift+f6") -> "Shift+F6"`；`format_hotkey("shift+f6|shift+f2") -> "Shift+F6/Shift+F2"`
 - 按钮里位置不够时"逐个丢掉后面的备选键"，还是不够就整个不显示（见 `PanelWindow._draw`）
 
 #### 一个动作绑多个键
@@ -177,17 +221,18 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\pythonw.exe harmonica_vis
 `config.hotkeys` 的值支持两种写法：
 
 - `+` = **同时按下**（组合键），如 `"quit": "ctrl+alt+q"`
-- `|` = **备选键**，任一组合按下都触发，如 `"toggle_visible": "shift+f6|shift+f4"`
+- `|` = **备选键**，任一组合按下都触发，如 `"toggle_visible": "shift+f6|shift+f2"`
 
 ```json
-"toggle_visible": "shift+f6|shift+f4|shift+f2|ctrl+h"   // 四组都能隐藏
+"toggle_visible": "shift+f6|shift+f2|ctrl+h"   // 三组都能隐藏
 ```
 
 内部结构：`Overlay.hotkey_vks[action]` 是 **list[tuple[vk,...]]**（备选组合的列表），
 `_poll_input` 用 `any(all(st.get(v,False) for v in c) for c in combos)` 判定。
 旧的单值写法（`"f6"`）依然兼容。
 
-⚠️ 加备用键是为了防"游戏占用了某个 F 键"——Shift+F6 / Shift+F4 都可能被游戏抢走，所以留了两个。
+默认只绑一个键（Shift+F6）。担心被游戏抢占的话，可以在 config.json 里自己加备用键
+（如 `"toggle_visible": "shift+f6|shift+f2"`）——解析与提示文字都会自动跟上。
 
 ⚠️ **不要做"老配置自动升级"的隐式迁移**：`load_config()` 每次启动都跑，
 按"旧默认值"回写会变成每次启动覆盖用户设置（`main()` 里那句
@@ -205,7 +250,7 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\pythonw.exe harmonica_vis
 | 载入面板上选中的曲谱来改 | 【载入当前曲谱】 |
 | 读入外部 .txt | 【从文件导入…】 |
 | 保存到曲谱文件夹 | Ctrl+S / 【保存到曲谱库】（重名会问是否覆盖） |
-| **静默保存（不弹框、不要求窗口在前台）** | **Shift+F5**（重名自动改名「某某2」） |
+| **静默保存（不弹框、不要求窗口在前台）** | **Shift+F3**（重名自动改名「某某2」） |
 | 导出到任意位置 | Ctrl+E / 【导出为文件…】 |
 | **换曲谱文件夹** | 【曲谱文件夹…】（选回默认目录 = 恢复「跟着程序走」） |
 | 用资源管理器打开曲谱文件夹 | 【打开文件夹】 |
@@ -216,7 +261,7 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\pythonw.exe harmonica_vis
 - 保存成功后自动 `reload_songs()` 刷新面板列表，无需重启。
 
 ⚠️ **为什么保存有两个键**：Qt `QShortcut` 默认是 `Qt.WindowShortcut`，只有编辑器在前台时 `Ctrl+S` 才触发。
-玩家在游戏里按 Shift+F12 结束录音时编辑器并不在前台 → `Ctrl+S` 会「没反应」。因此**额外**提供 Shift+F5：
+玩家在游戏里按 Shift+F12 结束录音时编辑器并不在前台 → `Ctrl+S` 会「没反应」。因此**额外**提供 Shift+F3：
 它走全局轮询热键，不依赖焦点、不弹任何框、重名自动改名，结果写在 HUD 提示条上。
 
 ## 曲谱文件夹（v8 新增）
@@ -322,14 +367,17 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\Scripts\python.exe harmon
 
 | 脚本 | 用途 |
 |------|------|
-| `_tests/_t_editor.py` | **改编辑器后先跑这个**：离屏 13 组断言（录音/撤销/换行/注释行不被污染/非法文件名/Shift+F5 静默保存与重名改名/空内容不落盘/录音视图像素/面板按钮） |
+| `_tests/_t_editor.py` | **改编辑器后先跑这个**：离屏 13 组断言（录音/撤销/换行/注释行不被污染/非法文件名/Shift+F3 静默保存与重名改名/空内容不落盘/录音视图像素/面板按钮） |
 | `_tests/_t_list.py` | **改面板布局/列表后跑这个**：8 组断言 × (8 种面板高度 × 6 种曲谱数量)：按钮全在面板内 / 列表不压按钮 / 滚动条按需出现 / 文字与滚动条不重叠 / 滚轮·拖滑块·点轨道的夹紧与翻页 / 少曲谱时不出滚动条 |
+| `_tests/_t_follow.py` | **改跟随演奏模式 / 曲谱格式解析后跑这个**：Dr-hydra 节奏标记→拍数、键位 token→(通道,音调)、样张与两首真谱解析、状态机 idle→countdown→playing→done |
+| `_tests/_t_hold.py` | **改长音逻辑后跑这个**：短音照旧按一下即消 / 长音按下只算接住、按住到满时才完成 / 按住期间不判 miss 且忽略其他按键 / 松手宽限内按回来不断、超宽限则漏过并变暗落走 / 关掉输入读取时不会卡住 / reset 清空 / 经典模式不受影响 / 按住中重绘不崩 |
 | `_tests/_t_folder.py` | **改曲谱目录逻辑后跑这个**：默认目录 / 切到自定义 / 重启后仍生效 / 相对路径解析 / 切回默认 / 空目录时复制自带曲谱 |
-| `_tests/_t_exe.py` | **改完 exe 必跑**：真机注入 e2e（Shift+F11→Shift+F12→右键+zxc、vbnm,→Ctrl+S，再验证"焦点不在本程序时按 Shift+F5"），校验 songs 里落盘内容逐音正确。⚠️ 注入 F 区热键必须先按住 Shift（`hot()` 封装）；崩溃后会留下还在跑的 exe 占住临时目录 → 脚本开头会重试删除并给出人话提示 |
+| `_tests/_t_exe.py` | **改完 exe 必跑**：真机注入 e2e（Shift+F11→Shift+F12→右键+zxc、vbnm,→Ctrl+S，再验证"焦点不在本程序时按 Shift+F3"），校验 songs 里落盘内容逐音正确。⚠️ 注入 F 区热键必须先按住 Shift（`hot()` 封装）；崩溃后会留下还在跑的 exe 占住临时目录 → 脚本开头会重试删除并给出人话提示 |
 | `_tests/_t_smoke.py` | 交付副本冒烟：真启动交付目录那份 exe + 枚举窗口（`--noconsole` 崩溃看不见） |
-| `_tests/_t_visibility.py` | **改隐藏/热键逻辑后先跑这个**：离屏验证多备选键解析（`shift+f6\|shift+f4`）、**所有含 F 键的组合都带 Shift**、**注入假键盘状态确认 Shift+F4/F6 都能触发、按住不连发、裸按 F 键与单按 Shift 都不触发**、面板有【隐藏窗口】且提示文字从 config 现取、编辑器联动、10 轮快速隐藏恢复。⚠️ offscreen 是回退字体、比真实屏幕宽 → **别在里面断言"提示一定画得出来"** |
-| `_tests/_t_hide.py` | 真机验证「一键隐藏 / 恢复」：注入 Shift+F6 与 Shift+F4（`tap(key, shift=False)` 可注入裸 F 键），断言两个窗口真的消失 / 回来、位置不变、恢复后仍置顶、叠加层仍穿透；**裸按 F6 完全没反应**、隐藏时按 Shift+F7 / 裸 F4 不会意外唤醒 |
+| `_tests/_t_visibility.py` | **改隐藏/热键逻辑后先跑这个**：离屏验证热键解析（含 `\|` 备选键与裸键自定义）、**所有含 F 键的组合都带 Shift**、**注入假键盘状态确认 Shift+F6 能触发、按住不连发、裸按 F 键与单按 Shift 都不触发**、面板有【隐藏窗口】且提示文字从 config 现取、编辑器联动、10 轮快速隐藏恢复。⚠️ offscreen 是回退字体、比真实屏幕宽 → **别在里面断言"提示一定画得出来"** |
+| `_tests/_t_hide.py` | 真机验证「一键隐藏 / 恢复」：注入 Shift+F6（`tap(key, shift=False)` 可注入裸 F 键），断言两个窗口真的消失 / 回来、位置不变、恢复后仍置顶、叠加层仍穿透；**裸按 F6 完全没反应**、隐藏时按 Shift+F7 / 已删除的 Shift+F4 / 裸 F4 都不会意外唤醒 |
 | `_tests/_t_zip_clean.py` | **发布前必跑**：解开 `三角洲口琴曲谱_v8.zip` → 校验中文文件名 → **PATH 只剩系统目录**（排除本机 PySide6）后启动 exe，模拟"陌生人的电脑"。改 spec 瘦身名单后必跑 |
+| `_tests/_shot_hold.py` | 出图：长音"接住 → 判定线吃掉一半 → 快吃完"三帧拼成 `长音按住消除.png` |
 | `_tests/_shot_compare.py` | 出图：3 种面板状态拼成 `面板列表滚动条对比.png`（红虚线=`list_clip`，蓝=滚动条） |
 | `hv_hotkey_test.py` | 注入 F7/F8/F9、8 个通道按键（含逗号）、鼠标左中右键，验证读取链路 |
 | `hv_state_test.py` | 用 `WindowFromPoint` 验证三种穿透状态 |

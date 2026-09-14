@@ -46,7 +46,8 @@ class INPUT(ctypes.Structure):
 assert ctypes.sizeof(INPUT) == 40, ctypes.sizeof(INPUT)   # x64 必须是 40 字节
 
 VK = {"z": 0x5A, "x": 0x58, "c": 0x43, "v": 0x56, "b": 0x42, "n": 0x4E, "m": 0x4D,
-      ",": 0xBC, "r": 0x52, "e": 0x45, "1": 0x31, "f5": 0x74, "f11": 0x7A, "f12": 0x7B,
+      ",": 0xBC, "r": 0x52, "e": 0x45, "1": 0x31, "f3": 0x72, "f5": 0x74, "f6": 0x75,
+      "f11": 0x7A, "f12": 0x7B,
       "ctrl": 0x11, "s": 0x53, "alt": 0x12, "q": 0x51, "shift": 0x10,
       "escape": 0x1B, "enter": 0x0D, "tab": 0x09}
 MOUSE_DN = {"left": 0x0002, "right": 0x0008, "middle": 0x0020}
@@ -73,8 +74,8 @@ def tap(name, dur=0.06):
 def hot(name, dur=0.06):
     """按一次 F 区热键。
 
-    ⚠️ 现在所有 F 区热键都要求**按住 Shift**（Shift+F5/F11/F12…），
-    避免和游戏里的 F4~F12 抢键 → 注入时必须先按住 Shift。
+    ⚠️ 现在所有 F 区热键都要求**按住 Shift**（Shift+F3/F5/F6/F11/F12…），
+    避免和游戏里的 F 键抢键 → 注入时必须先按住 Shift。
     """
     key("shift", True)
     time.sleep(0.04)
@@ -215,7 +216,7 @@ def kill_instances_in(folder):
 
 
 # ---------------------------------------------------------------- 准备临时副本
-SRC = r"D:\AI\DF Harmonica\口琴曲谱"
+SRC = r"D:\AI\DF Harmonica\三角洲口琴曲谱_发布版"
 TMP = os.path.join(os.environ["TEMP"], "hv_exe_record_test")
 # 上一次跑崩了会把"还在运行的 exe"留在临时目录里、占住文件夹删不掉，
 # 于是下一次报 FileExistsError 这种看不懂的错 → 这里显式重试并给出人话提示。
@@ -421,7 +422,7 @@ if new:
 check("录下来的音（含 高音 ^ / 半音+降调 #b / 半音+升调 #^）", body.split(),
       ["^1", "^2", "^3", "4", "5", "6", "7", "8", "#b1", "#^2"])
 
-print("[F2] 真实场景：焦点不在本程序上（相当于游戏在前台），不碰编辑器直接按 Shift+F5 保存")
+print("[F2] 真实场景：焦点不在本程序上（相当于游戏在前台），不碰编辑器直接按 Shift+F3 保存")
 click(SW - 60, SH - 200)                  # 把焦点让出去，模拟游戏独占前台
 time.sleep(0.5)
 print("      此时前台窗口 =", user32.GetForegroundWindow(), "（编辑器是", ed_hwnd, "）")
@@ -431,12 +432,12 @@ time.sleep(0.8)
 for k in "zn":
     tap(k)
 time.sleep(0.4)
-hot("f5")                                  # 一条龙：结束录音 + 存进曲谱库
+hot("f3")                                  # 一条龙：结束录音 + 存进曲谱库
 time.sleep(2.0)
 after2 = set(os.listdir(songs_dir))
 new2 = sorted(after2 - after)
-print("F5 保存后 songs:", sorted(after2))
-check("F5 又新增了 1 个曲谱文件", len(new2), 1)
+print("Shift+F3 保存后 songs:", sorted(after2))
+check("Shift+F3 又新增了 1 个曲谱文件", len(new2), 1)
 if new2:
     path2 = os.path.join(songs_dir, new2[0])
     text2 = open(path2, encoding="utf-8").read()
@@ -444,14 +445,14 @@ if new2:
     print("      文件内容:", repr(text2))
     body2 = " ".join(l for l in text2.splitlines()
                      if l.strip() and not l.strip().upper().startswith(("TITLE=", "BPM=")))
-    check("F5 存下的最后两个音是刚弹的 1 和 6（z 与 n 键）", body2.split()[-2:], ["1", "6"])
+    check("Shift+F3 存下的最后两个音是刚弹的 1 和 6（z 与 n 键）", body2.split()[-2:], ["1", "6"])
     check("曲名重名时自动改成《我的曲谱2》", new2[0], "我的曲谱2.txt")
 
 print("[H] exe 能往自己所在目录写文件")
 cfg_text = open(os.path.join(TMP, "config.json"), encoding="utf-8").read()
-check("config.json 里热键都带 Shift 前缀（Shift+F5/F11/F12）",
+check("config.json 里热键都带 Shift 前缀（Shift+F3/F11/F12）",
       ('"editor": "shift+f11"' in cfg_text and '"toggle_record": "shift+f12"' in cfg_text
-       and '"save_song": "shift+f5"' in cfg_text), True)
+       and '"save_song": "shift+f3"' in cfg_text), True)
 
 print("[G] 退出（Ctrl+Alt+Q）")
 combo("ctrl", "alt", "q", hold=0.2)

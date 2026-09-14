@@ -2,9 +2,9 @@
 """「一键隐藏 / 恢复」+「Shift 前缀热键」的离屏测试
 
 覆盖：
-  1. 热键解析：一个动作配多个备选键（"shift+f6|shift+f4"），组合键写法不受影响
-  2. **所有 F 区热键都必须带 Shift**（防止和游戏里的 F4~F12 抢键）
-  3. 注入假的按键状态，验证 Shift+F4 / Shift+F6 都能触发、按住不放不会连发、
+  1. 热键解析：一个动作配多个备选键（"shift+f6"），组合键写法不受影响
+  2. **所有 F 区热键都必须带 Shift**（防止和游戏里的 F 键抢键）
+  3. 注入假的按键状态，验证 Shift+F6 能触发、按住不放不会连发、
      单按 F6（不按 Shift）/ 单按 Shift 都不能触发
   4. 隐藏时把「叠加层 + 面板 + 编辑器」一起收起来（编辑器开着也不留残余挡视野）
   5. 恢复时三个都回来；编辑器原本没开就不要自己冒出来
@@ -68,12 +68,11 @@ def build():
 print("[1] 热键解析：一个动作可以配多个备选键，Shift 是组合键的一部分")
 ov, p, ed = build()
 hk = ov.hotkey_vks
-check("toggle_visible 有 2 组备选", len(hk.get("toggle_visible", [])) == 2,
+check("toggle_visible 只有 1 组（F4 备选已删）", len(hk.get("toggle_visible", [])) == 1,
       hk.get("toggle_visible"))
 check("第 1 组是 Shift+F6", hk["toggle_visible"][0] == (VK_SHIFT, VK_F6), hk["toggle_visible"][0])
-check("第 2 组是 Shift+F4", hk["toggle_visible"][1] == (VK_SHIFT, VK_F4), hk["toggle_visible"][1])
-check("Shift / F4 / F6 都在轮询表里",
-      all(v in ov._watched for v in (VK_SHIFT, VK_F4, VK_F6)))
+check("Shift / F6 都在轮询表里",
+      all(v in ov._watched for v in (VK_SHIFT, VK_F6)))
 
 print("\n[2] F 区热键全部带 Shift（不再有裸 F 键 → 不会和游戏抢键）")
 naked = []
@@ -87,7 +86,8 @@ for act, combos in hk.items():
 check("每个含 F 键的组合都带 Shift", not naked, naked)
 check("quit 只有 1 组且不受影响", hk["quit"] == [(0x11, 0x12, 0x51)], hk["quit"])
 check("next_song 是 Shift+F7", hk["next_song"] == [(VK_SHIFT, VK_F7)], hk["next_song"])
-check("save_song 是 Shift+F5", hk["save_song"] == [(VK_SHIFT, 0x74)], hk["save_song"])
+check("save_song 是 Shift+F3", hk["save_song"] == [(VK_SHIFT, 0x72)], hk["save_song"])
+check("toggle_mode 是 Shift+F5", hk["toggle_mode"] == [(VK_SHIFT, 0x74)], hk["toggle_mode"])
 check("editor 是 Shift+F11", hk["editor"] == [(VK_SHIFT, 0x7A)], hk["editor"])
 check("toggle_record 是 Shift+F12", hk["toggle_record"] == [(VK_SHIFT, 0x7B)], hk["toggle_record"])
 
@@ -95,9 +95,9 @@ print("\n[2b] 面板按钮：有「隐藏窗口」，提示文字由 config 生�
 actions = [a for row in hv.PANEL_ROWS for a, _ in row]
 check("按钮里有 toggle_visible", "toggle_visible" in actions, actions)
 check("隐藏窗口在最上面（一眼能看到）", actions[0] == "toggle_visible", actions)
-check("按钮数量 = 7", len(actions) == 7, len(actions))
-check("隐藏窗口的提示 = Shift+F6/Shift+F4",
-      hv.hotkey_text(cfg, "toggle_visible") == "Shift+F6/Shift+F4",
+check("按钮数量 = 8", len(actions) == 8, len(actions))
+check("隐藏窗口的提示 = Shift+F6",
+      hv.hotkey_text(cfg, "toggle_visible") == "Shift+F6",
       hv.hotkey_text(cfg, "toggle_visible"))
 check("退出提示不受影响", hv.hotkey_text(cfg, "quit") == "Ctrl+Alt+Q",
       hv.hotkey_text(cfg, "quit"))
@@ -138,28 +138,22 @@ try:
     check("单按 Shift 不会隐藏", ov.isVisible())
     press(VK_SHIFT, False); tick()
 
-    # --- Shift+F4 → 隐藏
+    # --- Shift+F6 → 隐藏
     press(VK_SHIFT, True); tick()
-    press(VK_F4, True); tick()
-    check("Shift+F4 → 叠加层隐藏", not ov.isVisible())
-    check("Shift+F4 → 面板隐藏", not p.isVisible())
+    press(VK_F6, True); tick()
+    check("Shift+F6 → 叠加层隐藏", not ov.isVisible())
+    check("Shift+F6 → 面板隐藏", not p.isVisible())
 
     # --- 一直按着 → 不连发
     tick(); tick()
-    check("按住 Shift+F4 不放不会连发（仍是隐藏）", not ov.isVisible())
+    check("按住 Shift+F6 不放不会连发（仍是隐藏）", not ov.isVisible())
 
-    press(VK_F4, False); tick()
-    check("松开 F4 后仍隐藏（松键不触发）", not ov.isVisible())
-    press(VK_F4, True); tick()
-    check("Shift 还按着、再按 F4 → 触发恢复", ov.isVisible() and p.isVisible())
-    press(VK_F4, False); tick()
+    press(VK_F6, False); tick()
+    check("松开 F6 后仍隐藏（松键不触发）", not ov.isVisible())
+    press(VK_F6, True); tick()
+    check("Shift 还按着、再按 F6 → 触发恢复", ov.isVisible() and p.isVisible())
+    press(VK_F6, False); tick()
     press(VK_SHIFT, False); tick()
-
-    # --- Shift+F6 同样能触发
-    hotkey(VK_F6)
-    check("Shift+F6 → 同样能隐藏", not ov.isVisible())
-    hotkey(VK_F6)
-    check("Shift+F6 → 同样能恢复", ov.isVisible() and p.isVisible())
 
     # --- 其它键不应该误触发
     press(VK_SHIFT, True); tick()
@@ -196,10 +190,10 @@ try:
     seq = []
     for _ in range(10):
         press(VK_SHIFT, True); tick()
-        press(VK_F4, True); tick(); seq.append(ov.isVisible())
-        press(VK_F4, False); tick()
-        press(VK_F4, True); tick(); seq.append(ov.isVisible())
-        press(VK_F4, False); tick()
+        press(VK_F6, True); tick(); seq.append(ov.isVisible())
+        press(VK_F6, False); tick()
+        press(VK_F6, True); tick(); seq.append(ov.isVisible())
+        press(VK_F6, False); tick()
         press(VK_SHIFT, False); tick()
     expect = [False, True] * 10
     check("10 轮隐藏/恢复状态都对", seq == expect, seq[:6])

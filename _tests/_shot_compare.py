@@ -137,7 +137,7 @@ for i, (n, h, t1, t2, pm, lay, sb, cnt) in enumerate(items):
 pt.setPen(QColor(150, 155, 165))
 pt.setFont(QFont("Microsoft YaHei UI", 8))
 pt.drawText(PAD, H - 30, "任何面板高度下：列表行不越界、不压按钮；滚动条只在曲谱数超过可见行数时出现（滚轮 / 拖动 / 点击轨道均可翻页）。")
-pt.drawText(PAD, H - 16, "所有 F 区快捷键都要求按住 Shift（Shift+F4 ~ Shift+F12），所以游戏里直接按 F4~F12 不会触发本程序 —— 这就是防抢键的设计。")
+pt.drawText(PAD, H - 16, "所有 F 区快捷键都要求按住 Shift（Shift+F3 / Shift+F5~F12），所以游戏里直接按 F 键不会触发本程序 —— 这就是防抢键的设计。")
 pt.end()
 
 OUT = r"D:/AI/DF Harmonica/面板列表滚动条对比.png"

@@ -40,18 +40,19 @@
   - 如需彻底静默：把 config.json 的 keyboard_monitor 设为 false（完全不读取键鼠）
 
 热键（全局有效，均可在 config.json 中改）：
-  ⚠️ 全部 F 区热键都要**按住 Shift** 再按，避免和游戏里的 F4~F12 抢键。
-  Shift+F6（或 Shift+F4）  显示 / 隐藏全部窗口（游戏中防遮挡视野，一键收起 / 一键回来）
+  ⚠️ 全部 F 区热键都要**按住 Shift** 再按，避免和游戏里的 F 键抢键。
+  Shift+F6      显示 / 隐藏全部窗口（游戏中防遮挡视野，一键收起 / 一键回来）
   Shift+F7      切换下一首曲谱
   Shift+F8      锁定 / 调整模式（拖动、缩放以对齐灯带与游戏按键）
   Shift+F9      从头重来
   Shift+F10     面板可点击 / 面板也鼠标穿透
   Shift+F11     打开 / 关闭【曲谱编辑器】（添加、录制、编辑、导出曲谱）
   Shift+F12     开始 / 结束 录音（弹一遍按键即可录成曲谱）
-  Shift+F5      保存录音为曲谱（静默，不弹框，游戏在前台也能按）
+  Shift+F5      切换 经典模式 / 跟随演奏模式
+  Shift+F3      保存录音为曲谱（静默，不弹框，游戏在前台也能按）
   Ctrl+Alt+Q    退出
   想换成别的键 / 加备用键：改 config.json 的 hotkeys。
-  例："toggle_visible": "shift+f6|shift+f4"（| = 备选键，+ = 同时按下）
+  例："toggle_visible": "shift+f6"（| = 备选键，+ = 同时按下）
 
 曲谱编辑器（v7 新增）：
   面板上的「✚ 添加曲谱」按钮或 Shift+F11 打开。窗口里可以：
@@ -76,6 +77,7 @@
 
 import ctypes
 import json
+import math
 import os
 import re
 import sys
@@ -83,7 +85,7 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QEvent
 from PySide6.QtGui import (QColor, QPainter, QPen, QFont, QFontMetrics, QPainterPath,
-                           QShortcut, QKeySequence, QTextCursor)
+                           QBrush, QRadialGradient, QShortcut, QKeySequence, QTextCursor)
 from PySide6.QtWidgets import (QApplication, QWidget, QLineEdit, QPlainTextEdit,
                                QPushButton, QLabel, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QMessageBox)
@@ -258,6 +260,8 @@ def ensure_data_files():
 KEY_LABELS = ["z", "x", "c", "v", "b", "n", "m", ","]
 # 默认按键绑定（config.json 的 note_keys 可改）
 DEFAULT_NOTE_KEYS = ["z", "x", "c", "v", "b", "n", "m", "comma"]
+# 键位字符 -> 通道下标 0~7（Dr-hydra 曲谱库的谱面用大写字母 + 逗号，解析时统一转小写）
+KEY_INDEX = {k: i for i, k in enumerate("zxcvbnm,")}
 
 # 六种音调：填充色 / 文字色
 # 降调=绿、半音=紫、升调=蓝（与游戏内长按鼠标左/中/右键时灯带颜色一致）
@@ -327,6 +331,7 @@ PANEL_ROWS = [
     [("editor", "✚ 添加曲谱")],
     [("toggle_adjust", "调整窗口")],
     [("toggle_play", "从头重来")],
+    [("toggle_mode", "跟随演奏")],
     [("next_song", "下一首")],
     [("toggle_panel", "面板穿透")],
     [("quit", "退出程序")],
@@ -349,6 +354,16 @@ DEFAULT_CONFIG = {
     "loop": True,
     "keyboard_monitor": True,         # false = 完全不读取键鼠（纯视觉，热键也会失效）
     "leader_strict_modifier": False,  # 是否必须同时按住修饰键才算弹对
+    # 演奏模式：classic = 经典（音符堆叠消除）；follow = 跟随演奏（音符按时值下落，音游式）
+    "mode": "classic",
+    # —— 跟随演奏模式参数 ——
+    "follow_speed": 200.0,            # 音符下落速度（像素/秒）
+    "follow_lead": 2.0,               # 倒计时结束后，第一个音到判定线还要多久（秒）
+    "follow_window": 0.20,            # 判定窗口（秒，太早/太晚都不算）
+    # 长音（很长的矩形）：超过这个拍数就要求"按住不放"才算完成
+    "hold_min_beats": 1.5,            # 1.5 拍以上算长音（想全部改成"按一下即消"就调到很大，如 999）
+    "hold_grace": 0.20,               # 按住期间手指短暂松开多久以内不算断（秒）
+    "countdown_seconds": 3,           # 准备倒计时秒数
     # 8 个通道绑定的按键（顺序 = 通道 1~8）。逗号键写 comma
     "note_keys": list(DEFAULT_NOTE_KEYS),
     # 游戏内：长按鼠标左键=降调、中键=半音、右键=升调
@@ -359,17 +374,18 @@ DEFAULT_CONFIG = {
     },
     "hotkeys": {
         # 值可以写多个备选键，用 | 隔开（任一组合按下都算）；同一个键位内用 + 表示"同时按下"
-        # ⚠️ F 区热键统一加了 Shift 前缀（Shift+F4 ~ Shift+F12）：
-        #    游戏里经常要用 F4~F12，不加修饰键容易抢键、误触发。
-        # toggle_visible = 一键隐藏/恢复全部窗口（游戏中防遮挡视野），Shift+F6 和 Shift+F4 都能用
-        "toggle_visible": "shift+f6|shift+f4",
+        # ⚠️ F 区热键统一加了 Shift 前缀（Shift+F3 / Shift+F5 ~ Shift+F12）：
+        #    游戏里经常要用 F 键，不加修饰键容易抢键、误触发。
+        # toggle_visible = 一键隐藏/恢复全部窗口（游戏中防遮挡视野）
+        "toggle_visible": "shift+f6",
         "next_song": "shift+f7",
         "toggle_adjust": "shift+f8",
         "toggle_play": "shift+f9",
         "toggle_panel": "shift+f10",
         "editor": "shift+f11",
         "toggle_record": "shift+f12",
-        "save_song": "shift+f5",
+        "save_song": "shift+f3",
+        "toggle_mode": "shift+f5",
         "quit": "ctrl+alt+q",
     },
 }
@@ -411,7 +427,7 @@ def format_combo(combo):
 
 
 def format_hotkey(combo, joiner="/"):
-    """"shift+f6|shift+f4" -> "Shift+F6/Shift+F4"（多个备选键用 joiner 连接）"""
+    """"shift+f6|shift+f4" -> "Shift+F6/Shift+F4"（多个备选键用 joiner 连接，如 "shift+f6" -> "Shift+F6"）"""
     alts = [format_combo(a) for a in str(combo).split("|") if a.strip()]
     return joiner.join(a for a in alts if a)
 
@@ -488,6 +504,136 @@ def parse_song(text, fallback_title="未命名"):
     return Song(meta.get("TITLE", fallback_title), bpm, notes, text)
 
 
+# ---------- Dr-hydra 曲谱库（Delta-Force-Harmonica）文本谱格式 ----------
+# 来源 https://github.com/Dr-hydra/Delta-Force-Harmonica 的"人可演奏版文本谱"导出。
+# 特征：每小节有「简谱 / 键位 / 节奏」三行，键位用 Z X C V B N M , 加修饰标记 + - #。
+# 与我们自己的简谱格式（TITLE=/BPM= 头 + 数字 + 前缀 b # ^）完全不同，需单独解析。
+
+def is_dfh_tab(text):
+    """判断这段文本是不是 Dr-hydra 曲谱库的 tab 格式（而非我们自己的简谱格式）"""
+    s = str(text)
+    return "键位标记" in s or ("小节" in s and "键位" in s)
+
+
+def rhythm_to_beats(tok):
+    """把 Dr-hydra 谱面「节奏」列的记号翻译成拍数（beats）。
+
+    这是仓库 src/score/measures.ts 里 durationLabel 的逆映射：
+      1=4拍  2·=3拍  2=2拍  4·=1.5拍  4=1拍
+      8·=0.75拍  8=0.5拍  16·=0.375拍  16=0.25拍  32=0.125拍
+    其它（如 2.5b / 4.25b / 1.25b / 5b）是"非标准拍数"，b 后缀直接读数字。
+    """
+    tok = str(tok).strip()
+    if tok.endswith("b"):
+        try:
+            return float(tok[:-1])
+        except ValueError:
+            return 1.0
+    table = {
+        "1": 4.0, "2·": 3.0, "2": 2.0, "4·": 1.5, "4": 1.0,
+        "8·": 0.75, "8": 0.5, "16·": 0.375, "16": 0.25, "32": 0.125,
+    }
+    return table.get(tok, 1.0)
+
+
+def dfh_key_state(mods):
+    """把键位后面的修饰标记字符（+ - # 任意组合）翻译成音调状态 0~5。
+
+    语义与我们的谱面完全一致：+ 升调 / - 降调 / # 半音，半音可与方向键组合。
+    """
+    s = set(str(mods))
+    if "#" in s:
+        if "-" in s:
+            return 4          # 半音 + 降调（黄）
+        if "+" in s:
+            return 5          # 半音 + 升调（红）
+        return 2              # 半音（紫）
+    if "-" in s:
+        return 1              # 降调（绿）
+    if "+" in s:
+        return 3              # 升调（蓝）
+    return 0                  # 本音（白）
+
+
+def dfh_key_token(tok):
+    """解析一个键位 token（如 "N-#"、"X+"、",-"），返回 (通道 0~7, 音调 0~5)。"""
+    tok = str(tok).strip()
+    if not tok:
+        return 0, 0
+    idx = KEY_INDEX.get(tok[0].lower(), None)
+    if idx is None:
+        return 0, 0
+    return idx, dfh_key_state(tok[1:])
+
+
+def parse_dfh_tab(text, fallback_title="未命名"):
+    """解析 Dr-hydra 曲谱库的文本谱，产出与 parse_song 相同的 Song 结构。
+
+    注意：节奏列只含"音符持续拍数"，不含"音符之间的休止"，所以小节内音符按
+    连续紧挨的方式排布、休止被忽略；但小节边界是精确的，误差不会跨小节累积。
+    对主旋律谱来说这个近似足够，也是该文本格式能还原出的最佳时间轴。
+    """
+    title = fallback_title
+    bpm = 90.0
+    notes = []
+    cur_beat = 0.0               # 绝对拍（从曲首算起）
+    measure_len = 0.0
+    in_measure = False
+    keys = []                    # 当前小节的键位 token 列表
+    rhythms = []                 # 当前小节的节奏 token 列表
+
+    def flush_measure():
+        nonlocal cur_beat, keys, rhythms, in_measure
+        if keys:
+            offset = 0.0
+            for ktok, rtok in zip(keys, rhythms):
+                ch, st = dfh_key_token(ktok)
+                dur = rhythm_to_beats(rtok)
+                notes.append((cur_beat + offset, dur, ch, st))
+                offset += dur
+        cur_beat += measure_len
+        keys = []
+        rhythms = []
+        in_measure = False
+
+    for raw in str(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "键位标记" in line:
+            continue
+        if "三角洲口琴谱" in line and not line.startswith("BPM"):
+            title = line.split("—")[0].strip() or fallback_title
+            continue
+        m = re.match(r"^BPM\s+([\d.]+)", line)
+        if m:
+            bpm = float(m.group(1))
+            continue
+        m = re.match(r"^小节\s+\d+\s*\((\d+)/(\d+)\)(.*)$", line)
+        if m:
+            if in_measure:
+                flush_measure()
+            num, den = int(m.group(1)), int(m.group(2))
+            measure_len = num * 4.0 / den
+            rest = m.group(3)
+            if "—" in rest:        # 空小节：直接推进整小节拍数
+                cur_beat += measure_len
+                in_measure = False
+            else:
+                in_measure = True
+            continue
+        if not in_measure:
+            continue
+        if line.startswith("键位"):
+            keys = line[2:].strip().split()
+        elif line.startswith("节奏"):
+            rhythms = line[2:].strip().split()
+
+    if in_measure:
+        flush_measure()
+    return Song(title, bpm, notes, text)
+
+
 def safe_filename(name):
     """把曲名变成合法文件名（去掉 Windows 不允许的字符）"""
     s = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", str(name)).strip(" .")
@@ -521,7 +667,12 @@ def load_songs():
                 path = os.path.join(SONGS_DIR, name)
                 try:
                     with open(path, "r", encoding="utf-8") as f:
-                        songs.append(parse_song(f.read(), os.path.splitext(name)[0]))
+                        content = f.read()
+                    # 自动识别两种曲谱格式：Dr-hydra 曲谱库 tab 格式 / 我们自己的简谱格式
+                    if is_dfh_tab(content):
+                        songs.append(parse_dfh_tab(content, os.path.splitext(name)[0]))
+                    else:
+                        songs.append(parse_song(content, os.path.splitext(name)[0]))
                 except Exception as e:
                     print("[曲谱] 读取失败:", path, e)
     if not songs:
@@ -653,14 +804,14 @@ class PanelWindow(QWidget):
         iw = max(40.0, w - 2 * pad)
         lay = {"pad": pad, "iw": iw, "w": w, "h": h}
         y = 12.0
-        lay["title"] = QRectF(pad, y, iw, 17); y += 22
-        lay["song"] = QRectF(pad, y, iw, 16); y += 18
-        lay["info"] = QRectF(pad, y, iw, 14); y += 19
-        lay["chips"] = QRectF(pad, y, iw, 41); y += 46      # 6 色 = 2 行 × 3（v8 升 v8.1 加 2 色）
-        lay["modhint"] = QRectF(pad, y, iw, 14); y += 18
-        lay["input"] = QRectF(pad, y, iw, 14); y += 20
-        lay["list_header"] = QRectF(pad, y, iw, 15)
-        list_top = y + 17.0
+        lay["title"] = QRectF(pad, y, iw, 16); y += 20
+        lay["song"] = QRectF(pad, y, iw, 15); y += 17
+        lay["info"] = QRectF(pad, y, iw, 13); y += 16
+        lay["chips"] = QRectF(pad, y, iw, 38); y += 42      # 6 色 = 2 行 × 3（v8 升 v8.1 加 2 色）
+        lay["modhint"] = QRectF(pad, y, iw, 13); y += 16
+        lay["input"] = QRectF(pad, y, iw, 13); y += 17
+        lay["list_header"] = QRectF(pad, y, iw, 14)
+        list_top = y + 16.0
 
         n_btn = len(PANEL_ROWS)
 
@@ -721,6 +872,10 @@ class PanelWindow(QWidget):
             return ("隐藏窗口", False)
         if action == "next_song":
             return ("下一首", False)
+        if action == "toggle_mode":
+            # 显示"切过去"的目标模式名，激活态 = 当前就是跟随演奏模式
+            follow = (self.ov.mode == "follow")
+            return ("经典模式" if follow else "跟随演奏", follow)
         if action == "quit":
             return ("退出程序", False)
         return (action, False)
@@ -894,7 +1049,7 @@ class PanelWindow(QWidget):
                 if hint:
                     fm8 = QFontMetrics(QFont("Microsoft YaHei UI", 8))
                     hint_w = fm8.horizontalAdvance(hint) + 10.0
-                    # 有两个备选键时（Shift+F6/Shift+F4）先只留第一个，还是太挤就整个不显示
+                    # 有多个备选键时（Shift+F6/Shift+F4 这类）先只留第一个，还是太挤就整个不显示
                     while "/" in hint and r.width() - 16.0 - hint_w < 42.0:
                         hint = hint.rsplit("/", 1)[0]
                         hint_w = fm8.horizontalAdvance(hint) + 10.0
@@ -1106,7 +1261,24 @@ class Overlay(QWidget):
         self.ghost = None             # (t0, ch, state, height) 消除时的飞散残影
         self.finished_at = None
 
+        # 演奏模式：classic = 经典（堆叠消除）/ follow = 跟随演奏（按时值下落）
+        self.mode = cfg.get("mode", "classic")
+        if self.mode not in ("classic", "follow"):
+            self.mode = "classic"
+        # 跟随演奏模式状态机：idle(待命) → countdown(倒计时) → playing(演奏) → done(完成)
+        self.follow_state = "idle"
+        self.follow_t0 = None         # 演奏开始时刻（monotonic），playing 时用
+        self.follow_next = 0          # 下一个待弹的音符下标
+        self.follow_missed = set()    # 已经 miss 的音符下标（绘制时变暗）
+        # 长音（v8.3）：按下只算"接住"，要一直按住，矩形被判定线一点点吃掉，
+        # 按满整个时值才算完成；中途松手剩下的漏过。
+        self.follow_hold = None       # {"idx","ch","state","start","dur","released"}；None = 没在按
+        self.follow_fade = set()      # 中断 / 漏掉的长音下标（剩余部分继续变暗落走）
+        self.key_down = {}            # ch -> 该通道按键当前是否按住（长音判定用）
+        self.countdown_deadline = None
+
         self.flashes = {}             # channel -> (monotonic, state)
+        self.impacts = []             # [(monotonic, ch, state, y)] 消除碰撞特效（音符×灯带的淡色光晕）
         self.wrong = {}               # channel -> monotonic
         self.held_mods = []           # 按下的修饰键（末位=最近按下，用于灯带配色）
         self.adjust_mode = False
@@ -1189,7 +1361,16 @@ class Overlay(QWidget):
         self.ghost = None
         self.finished_at = None
         self.flashes.clear()
+        self.impacts.clear()
         self.wrong.clear()
+        # 跟随演奏模式：回到"待命"，等玩家点第一个音再开始
+        self.follow_state = "idle"
+        self.follow_t0 = None
+        self.follow_next = 0
+        self.follow_missed.clear()
+        self.follow_hold = None
+        self.follow_fade.clear()
+        self.countdown_deadline = None
         if self.panel:
             self.panel.ensure_visible()
 
@@ -1268,6 +1449,7 @@ class Overlay(QWidget):
 
         for i, vk in enumerate(self.note_vks):
             down, was = st.get(vk, False), self._prev.get(vk, False)
+            self.key_down[i] = down          # 长音要看"是不是还按着"，不能只看边沿
             if down and not was:
                 if self.recording:
                     self._record_note(i)      # 录音时不判定游戏，只记录
@@ -1328,10 +1510,14 @@ class Overlay(QWidget):
         return MOD_ROLES.index(held[-1]) + 1        # 只有方向键 → 1 降调 / 3 升调
 
     def _on_note_press(self, ch):
-        """只有"最靠近底部的那一个"块能被消除；按错键则该通道红闪"""
+        """按键判定入口：跟随演奏模式走时间轴判定，经典模式走堆叠消除"""
         if not 0 <= ch <= 7:
             return
         now = time.monotonic()
+        if self.mode == "follow":
+            self._follow_press(ch, now)
+            return
+        """只有"最靠近底部的那一个"块能被消除；按错键则该通道红闪"""
         if self.finished_at is not None or self.cursor >= len(self.song.notes):
             return
         note = self.song.notes[self.cursor]
@@ -1345,9 +1531,158 @@ class Overlay(QWidget):
         self.ghost = (now, ch, note[3], h)
         self.slide = (now, h + 6.0)
         self.flashes[ch] = (now, note[3])
+        self.impacts.append((now, ch, note[3]))      # 消除碰撞特效
         self.cursor += 1
         if self.cursor >= len(self.song.notes):
             self.finished_at = now
+
+    # ---------- 跟随演奏模式 ----------
+
+    def _follow_spb(self):
+        """每秒多少拍 → 反过来：每拍多少秒"""
+        return 60.0 / max(1.0, self.song.bpm)
+
+    def _follow_lead(self):
+        return float(self.cfg.get("follow_lead", 2.0))
+
+    def _follow_window(self):
+        return float(self.cfg.get("follow_window", 0.20))
+
+    def _follow_play_time(self, now):
+        """当前"播放时间"（秒，相对曲首）。idle/countdown 时固定把第一个音对齐到
+        判定线上方 lead 秒处，让玩家能看清待弹的第一个音。"""
+        if self.follow_state == "playing" and self.follow_t0 is not None:
+            return (now - self.follow_t0) - self._follow_lead()
+        if self.song and self.song.notes:
+            return self.song.notes[0][0] * self._follow_spb() - self._follow_lead()
+        return -self._follow_lead()
+
+    def _follow_press(self, ch, now):
+        notes = self.song.notes
+        # 待命：点击第一个音 = "准备开始"，这次点击不消除任何矩形
+        if self.follow_state == "idle":
+            if not notes:
+                return
+            n = notes[0]
+            if n[2] != ch:
+                self.wrong[ch] = now
+                return
+            secs = int(self.cfg.get("countdown_seconds", 3))
+            self.follow_state = "countdown"
+            self.countdown_deadline = now + secs
+            self._say("准备就绪，%d 秒后开始…" % secs)
+            self.update()
+            return
+        if self.follow_state == "countdown":
+            return                       # 倒计时期间按键不判定
+        if self.follow_state != "playing":
+            return
+        if self.follow_next >= len(notes):
+            return
+        n = notes[self.follow_next]
+        if n[2] != ch:
+            self.wrong[ch] = now
+            return
+        hit = n[0] * self._follow_spb()
+        play = self._follow_play_time(now)
+        if abs(play - hit) > self._follow_window():
+            self.wrong[ch] = now          # 时机不对（太早/太晚）
+            return
+        # 命中
+        self.flashes[ch] = (now, n[3])
+        self.impacts.append((now, ch, n[3]))          # 消除碰撞特效
+        if float(n[1]) >= self._hold_min_beats():
+            # 长音：这次按下只算"接住"，矩形不消失 —— 要一直按住，
+            # 它会被判定线一点点吃掉；按满整个时值才算完成，中途松手剩下的漏过。
+            self.follow_hold = {"idx": self.follow_next, "ch": ch, "state": n[3],
+                                "start": play, "dur": float(n[1]), "released": None}
+            self.update()
+            return
+        self.follow_next += 1
+        self._follow_check_done(now)
+        self.update()
+
+    # ---------- 长音（按住不放才算完成） ----------
+
+    def _hold_min_beats(self):
+        """多长的音算"长音"：默认 1.5 拍。调大了就退回"按一下即消"。"""
+        try:
+            return float(self.cfg.get("hold_min_beats", 1.5))
+        except Exception:
+            return 1.5
+
+    def _follow_check_done(self, now):
+        if self.follow_next >= len(self.song.notes):
+            self.follow_state = "done"
+            self.finished_at = now
+
+    def _follow_hold_progress(self, now):
+        """正在按住的长音：已经按住的比例 0~1（绘制"被吃掉"用）"""
+        h = self.follow_hold
+        if not h:
+            return 0.0
+        total = max(0.05, h["dur"] * self._follow_spb())
+        return max(0.0, min(1.0, (self._follow_play_time(now) - h["start"]) / total))
+
+    def _follow_hold_tick(self, now):
+        """长音：按住期间矩形被判定线一点点吃掉；按满 → 完成；松手太久 → 漏过。
+
+        返回 True 表示这一帧有变化（调用方需要重绘）。
+        """
+        h = self.follow_hold
+        if not h:
+            return False
+        total = max(0.05, h["dur"] * self._follow_spb())
+        play = self._follow_play_time(now)
+        # 关掉输入读取时无法判断松手 → 一律当作按住，免得长音永远完不成
+        held = self.key_down.get(h["ch"], False) or not self._input_ok
+
+        if held:
+            h["released"] = None                      # 按着 → 清掉松手计时
+        elif h["released"] is None:
+            h["released"] = now                       # 刚松手，先进宽限期
+        elif now - h["released"] > float(self.cfg.get("hold_grace", 0.20)):
+            # 松手太久 → 长音没按满，剩下的漏过（变暗落走）
+            self.follow_fade.add(h["idx"])
+            self.follow_next = h["idx"] + 1
+            self.follow_hold = None
+            self.wrong[h["ch"]] = now                 # 红闪一下：这里断了
+            self._say("长音没按住，漏过")
+            self._follow_check_done(now)
+            return True
+
+        if play - h["start"] >= total:
+            # 按满了 → 真正消除
+            self.flashes[h["ch"]] = (now, h["state"])
+            self.impacts.append((now, h["ch"], h["state"]))
+            self.follow_next = h["idx"] + 1
+            self.follow_hold = None
+            self._say("长音完成")
+            self._follow_check_done(now)
+            return True
+        return False
+
+    def _follow_advance_missed(self, now):
+        """把已经错过判定窗口的音符标记为 miss 并跳过"""
+        spb = self._follow_spb()
+        play = self._follow_play_time(now)
+        win = self._follow_window()
+        changed = False
+        while self.follow_next < len(self.song.notes):
+            if self.follow_hold is not None and self.follow_hold["idx"] == self.follow_next:
+                break                       # 正被按住的长音不判 miss
+            n = self.song.notes[self.follow_next]
+            if n[0] * spb + win < play:
+                self.follow_missed.add(self.follow_next)
+                self.follow_fade.add(self.follow_next)   # 让它继续变暗落走，不凭空消失
+                self.follow_next += 1
+                changed = True
+                if self.follow_next >= len(self.song.notes):
+                    self.follow_state = "done"
+                    self.finished_at = now
+            else:
+                break
+        return changed
 
     # ---------- 录音（添加曲谱） ----------
 
@@ -1445,6 +1780,14 @@ class Overlay(QWidget):
         elif action == "toggle_play":
             self.reset_playback()
             self._say("从头重来")
+        elif action == "toggle_mode":
+            self.mode = "classic" if self.mode == "follow" else "follow"
+            self.reset_playback()
+            self._save_config({"mode": self.mode})
+            if self.mode == "follow":
+                self._say("已切到【跟随演奏】：弹对第一个音开始，之后音符按时值下落")
+            else:
+                self._say("已切到【经典模式】：音符堆叠，按顺序逐个消除")
         elif action == "next_song":
             self.select_song((self.song_idx + 1) % len(self.songs))
         elif action == "prev_song":
@@ -1461,7 +1804,7 @@ class Overlay(QWidget):
         elif action == "toggle_record":
             self.set_recording(not self.recording)
         elif action == "save_song":
-            # 走全局轮询热键（不依赖窗口焦点）：游戏在前台时按 F5 也能把刚录的曲谱存下来
+            # 走全局轮询热键（不依赖窗口焦点）：游戏在前台时按 F3 也能把刚录的曲谱存下来
             if self.editor:
                 self.editor.save_quick()
         elif action == "quit":
@@ -1488,6 +1831,21 @@ class Overlay(QWidget):
         mono = time.monotonic()
         self._last = mono
         self._poll_input()
+
+        # 跟随演奏模式：倒计时推进 + miss 检查
+        if self.mode == "follow":
+            if self.follow_state == "countdown" and self.countdown_deadline is not None:
+                if mono >= self.countdown_deadline:
+                    # 倒计时结束：进入演奏。follow_t0 这样设，能让第一个音
+                    # 从判定线上方 lead 秒处开始下落（与 idle 时的静止位置平滑衔接）
+                    first = (self.song.notes[0][0] * self._follow_spb()
+                             if self.song.notes else 0.0)
+                    self.follow_t0 = mono - first
+                    self.follow_state = "playing"
+                    self._say("开始！")
+            elif self.follow_state == "playing":
+                self._follow_hold_tick(mono)      # 长音：按住 → 被吃掉 → 按满才消
+                self._follow_advance_missed(mono)
 
         if self.finished_at and self.cfg.get("loop", True) and mono - self.finished_at > 1.2:
             self.reset_playback()
@@ -1530,6 +1888,8 @@ class Overlay(QWidget):
         p.setClipRect(QRectF(x0 - 3, 0, w - x0 + 3, hit_y))
         if self.recording:
             self._draw_recording(p, x0, ch_w, hit_y)
+        elif self.mode == "follow":
+            self._draw_follow(p, x0, ch_w, hit_y)
         else:
             self._draw_leader(p, x0, ch_w, hit_y)
         p.restore()
@@ -1630,6 +1990,8 @@ class Overlay(QWidget):
             p.setBrush(c)
             p.drawRoundedRect(QRectF(x0 + ch * ch_w + 2, hit_y - 5, ch_w - 4, 10), 4, 4)
 
+        self._draw_impacts(p, x0, ch_w, hit_y)
+
         if self.finished_at is not None:
             p.setPen(QColor(255, 255, 255, 220))
             p.setFont(QFont("Microsoft YaHei UI", 14, QFont.DemiBold))
@@ -1695,6 +2057,132 @@ class Overlay(QWidget):
             p.setFont(QFont("Microsoft YaHei UI", 10))
             p.drawText(QRectF(x0, ty - 40.0, avail, 24.0), Qt.AlignCenter,
                        "还没有录到音… 直接按 z x c v b n m , 试试")
+
+    def _draw_follow(self, p, x0, ch_w, hit_y):
+        """跟随演奏模式：音符按时值从上方下落，到达底部判定线（灯带）时按键。
+
+        状态机：idle 待命（点第一个音）→ countdown 倒计时 → playing 下落判定 → done。
+        """
+        now = time.monotonic()
+        song = self.song
+        spb = self._follow_spb()
+        speed = max(40.0, float(self.cfg.get("follow_speed", 200)))
+        play = self._follow_play_time(now)
+        w = float(self.width())
+
+        # 判定线：一道高亮线，让玩家知道该在哪按键
+        p.setPen(QPen(QColor(255, 255, 255, 110), 1))
+        p.drawLine(QPointF(x0, hit_y), QPointF(w - 8.0, hit_y))
+
+        # 下落中的音符（从 follow_next 起，还没被消除的；fade 的音继续画到落走为止）
+        draw_from = self.follow_next
+        if self.follow_fade:
+            draw_from = min(draw_from, min(self.follow_fade))
+        for i in range(draw_from, len(song.notes)):
+            start, dur, ch, st = song.notes[i]
+            hit = start * spb
+            y_end = hit_y - (hit - play) * speed
+            bh = max(6.0, dur * spb * speed)
+            y_start = y_end - bh
+            if y_end < -4.0:
+                continue                     # 还在屏幕上方很远，先不画
+            if y_start > hit_y + 6.0:
+                self.follow_fade.discard(i)  # 已经整个穿过判定线（落走），不用再留
+                continue
+            rect = QRectF(x0 + ch * ch_w + ch_w * 0.22, y_start, ch_w * 0.56, bh)
+            holding = bool(self.follow_hold and self.follow_hold["idx"] == i)
+            self._draw_block(p, rect, st, ch,
+                             highlight=(i == self.follow_next and not holding))
+            if holding:
+                # 长音正被按住：亮描边 + 判定线上一条随进度收缩的同色光带，
+                # 让"这块正在被判定线一点点吃掉"看得见
+                prog = self._follow_hold_progress(now)
+                p.setPen(QPen(QColor(255, 255, 255, int(210 - 110 * prog)), 2))
+                p.setBrush(Qt.NoBrush)
+                rad = min(12.0, max(3.0, rect.width() / 2.0))
+                p.drawRoundedRect(rect.adjusted(-2.0, -2.0, 2.0, 2.0), rad, rad)
+                bw = max(4.0, ch_w * 0.56 * (1.0 - prog))
+                c = QColor(STATE_STYLE[st]["fill"])
+                c.setAlpha(180)
+                p.setPen(Qt.NoPen)
+                p.setBrush(c)
+                p.drawRoundedRect(QRectF(x0 + ch * ch_w + (ch_w - bw) / 2.0,
+                                         hit_y - 9.0, bw, 9.0), 4, 4)
+            if i in self.follow_fade or i in self.follow_missed:
+                # miss / 长音断掉：盖一层半透明黑，让玩家知道这部分漏了
+                r = min(12.0, rect.height() / 2.0, rect.width() / 2.0)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(0, 0, 0, 150))
+                p.drawRoundedRect(rect, r, r)
+
+        # 消除碰撞特效（命中音符在判定线上泛起的光晕）
+        self._draw_impacts(p, x0, ch_w, hit_y)
+
+        # 待命提示
+        if self.follow_state == "idle":
+            first = song.notes[0] if song.notes else None
+            p.setPen(QColor(255, 255, 255, 240))
+            p.setFont(QFont("Microsoft YaHei UI", 13, QFont.DemiBold))
+            p.drawText(QRectF(x0, hit_y * 0.30, w - x0, 30), Qt.AlignCenter,
+                       "跟随演奏模式")
+            p.setPen(QColor(255, 255, 255, 175))
+            p.setFont(QFont("Microsoft YaHei UI", 10))
+            if first is not None:
+                p.drawText(QRectF(x0, hit_y * 0.30 + 30, w - x0, 24), Qt.AlignCenter,
+                           "弹对第一个音「%s」开始" % KEY_LABELS[first[2]])
+            p.drawText(QRectF(x0, hit_y * 0.30 + 54, w - x0, 24), Qt.AlignCenter,
+                       "开始前倒计时 %d 秒 · 长条要按住不放"
+                       % int(self.cfg.get("countdown_seconds", 3)))
+
+        # 倒计时大数字
+        if self.follow_state == "countdown" and self.countdown_deadline is not None:
+            remain = self.countdown_deadline - now
+            n = max(1, int(math.ceil(remain)))
+            p.setPen(QColor(255, 255, 255, 235))
+            p.setFont(QFont("Microsoft YaHei UI", 54, QFont.Bold))
+            p.drawText(QRectF(x0, hit_y * 0.30, w - x0, 64), Qt.AlignCenter, str(n))
+            p.setPen(QColor(255, 255, 255, 160))
+            p.setFont(QFont("Microsoft YaHei UI", 11))
+            p.drawText(QRectF(x0, hit_y * 0.30 + 66, w - x0, 24), Qt.AlignCenter,
+                       "准备…")
+
+        # 完成
+        if self.follow_state == "done":
+            p.setPen(QColor(255, 255, 255, 220))
+            p.setFont(QFont("Microsoft YaHei UI", 14, QFont.DemiBold))
+            p.drawText(QRectF(x0, hit_y * 0.42, w - x0, 30), Qt.AlignCenter,
+                       "演奏完成")
+
+    def _draw_impacts(self, p, x0, ch_w, hit_y):
+        """消除碰撞特效：命中音符时，在灯带/判定线上泛起一圈淡色光晕并扩散淡出，
+        让玩家明确看到「这块矩形被消掉了」，而不是瞬间凭空消失。"""
+        now = time.monotonic()
+        for it in list(self.impacts):
+            t0, ch, st = it
+            age = now - t0
+            if age > 0.32:
+                self.impacts.remove(it)
+                continue
+            k = age / 0.32
+            base = QColor(STATE_STYLE[st]["fill"])
+            cx = x0 + ch * ch_w + ch_w * 0.5
+            cy = hit_y - 2.0
+            max_r = ch_w * 0.62
+            r = max_r * (0.35 + 0.65 * k)
+            # 中心亮、向外淡出的软光晕
+            grad = QRadialGradient(cx, cy, max(1.0, r))
+            inner = QColor(base); inner.setAlpha(int(150 * (1 - k)))
+            outer = QColor(base); outer.setAlpha(0)
+            grad.setColorAt(0.0, inner)
+            grad.setColorAt(1.0, outer)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(grad))
+            p.drawEllipse(QPointF(cx, cy), r, r)
+            # 一圈扩散的细环（"碰撞涟漪"）
+            ring = QColor(base); ring.setAlpha(int(110 * (1 - k)))
+            p.setPen(QPen(ring, 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), r, r)
 
     def _draw_strip(self, p, x0, w, hit_y):
         """底部灯带：对齐游戏口琴按键上沿；颜色随当前按住的修饰键变化
@@ -2132,9 +2620,9 @@ class SongEditor(QWidget):
         return self._save(interactive=True)
 
     def save_quick(self):
-        """热键（F5）用的静默保存：一个弹框都不弹。
+        """热键（Shift+F3）用的静默保存：一个弹框都不弹。
 
-        因为按 F5 的那一刻多半是游戏在前台，弹框会抢走焦点、打断演奏；
+        因为按 Shift+F3 的那一刻多半是游戏在前台，弹框会抢走焦点、打断演奏；
         曲名重名时也自动改成"某某2"，不打断玩家。
         """
         if self.recording:
@@ -2271,11 +2759,12 @@ def main():
     QTimer.singleShot(220, panel.apply_style)
     print(SAFETY_NOTE)
     print("按键：%s" % " ".join(KEY_LABELS))
-    print("热键（都要按住 Shift，避免和游戏里的 F4~F12 抢键）：")
+    print("热键（都要按住 Shift，避免和游戏里的 F 键抢键）：")
     for act, name in (("toggle_visible", "显示/隐藏全部窗口"), ("next_song", "换下一首"),
                       ("toggle_adjust", "锁定/调整窗口"), ("toggle_play", "从头重来"),
                       ("toggle_panel", "面板穿透"), ("editor", "曲谱编辑器"),
                       ("toggle_record", "开始/结束录音"), ("save_song", "保存曲谱"),
+                      ("toggle_mode", "切换 经典/跟随演奏 模式"),
                       ("quit", "退出")):
         print("  %-20s %s" % (hotkey_text(cfg, act, " / "), name))
     print("也可以直接用鼠标点击窗口左侧面板上的按钮。")

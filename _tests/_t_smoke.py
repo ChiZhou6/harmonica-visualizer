@@ -80,7 +80,7 @@ def kill(pids):
                 kernel32.CloseHandle(h)
 
 
-SRC = r"D:\AI\DF Harmonica\口琴曲谱"
+SRC = r"D:\AI\DF Harmonica\三角洲口琴曲谱_发布版"
 TMP = tempfile.mkdtemp(prefix="hv_smoke_")
 D = os.path.join(TMP, "口琴曲谱")
 shutil.copytree(SRC, D)

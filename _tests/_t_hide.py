@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""真机验证「一键隐藏 / 恢复」（F6 与 F4 都要能触发）
+"""真机验证「一键隐藏 / 恢复」（Shift+F6 触发；Shift+F4 已删除，不再有效）
 
 为什么要真机测：--noconsole 的 exe 出问题什么都不显示；
 而且"隐藏后还能不能再显示回来"依赖主循环在窗口不可见时仍在跑，这个只能实测。
@@ -163,7 +163,7 @@ def check(name, cond, extra=""):
         fails.append(name)
 
 
-SRC = r"D:\AI\DF Harmonica\口琴曲谱"
+SRC = r"D:\AI\DF Harmonica\三角洲口琴曲谱_发布版"
 TMP = tempfile.mkdtemp(prefix="hv_hide_")
 D = os.path.join(TMP, "口琴曲谱")
 shutil.copytree(SRC, D)
@@ -179,7 +179,7 @@ s0 = snapshot(pids)
 print("\n[初始]  ", {x["what"]: (x["visible"], x["rect"]) for x in s0})
 check("两个窗口都在", len(s0) == 2, [x["title"] for x in s0])
 
-for key in ("f6", "f4"):
+for key in ("f6",):
     print("\n----- 测试 Shift+%s -----" % key.upper())
     tap(key)
     time.sleep(0.9)
@@ -227,9 +227,12 @@ time.sleep(0.9)
 check("裸按 F4 也不会把它叫回来", all(not x["visible"] for x in snapshot(pids)))
 tap("f4")
 time.sleep(0.9)
-check("按 Shift+F4 能把窗口叫回来", all(x["visible"] for x in snapshot(pids)))
+check("Shift+F4 已删除，按它也不会叫回来", all(not x["visible"] for x in snapshot(pids)))
+tap("f6")
+time.sleep(0.9)
+check("按 Shift+F6 能把窗口叫回来", all(x["visible"] for x in snapshot(pids)))
 
-print("\n结果:", "隐藏 / 恢复（Shift+F6 与 Shift+F4）全部正常 ✓" if not fails
+print("\n结果:", "隐藏 / 恢复（Shift+F6）全部正常 ✓" if not fails
       else "失败 %d 项 ✗ %s" % (len(fails), fails))
 
 proc.terminate()

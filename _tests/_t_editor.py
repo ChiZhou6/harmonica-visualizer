@@ -158,7 +158,7 @@ panel.resize(168, 560)
 panel.grab()                       # grab 会触发 paintEvent，填充 _hit_buttons
 acts = [a for _, a in panel._hit_buttons]
 check("按钮列表", acts, ["toggle_visible", "editor", "toggle_adjust", "toggle_play",
-                        "next_song", "toggle_panel", "quit"])
+                        "toggle_mode", "next_song", "toggle_panel", "quit"])
 r = [rr for rr, a in panel._hit_buttons if a == "editor"][0]
 check("按钮在面板内", 0 <= r.left() and r.right() <= panel.width(), True)
 check("按钮标签", panel._button_label("editor")[0], "添加曲谱")
@@ -178,8 +178,8 @@ check("再点一次关闭", ed.isVisible(), False)
 check("F11 已注册", cfg["hotkeys"]["editor"], "shift+f11")
 check("F12 已注册", cfg["hotkeys"]["toggle_record"], "shift+f12")
 
-print("[13] 热键 F5 → 静默保存（游戏在前台也能按，一个框都不弹）")
-check("F5 已注册", cfg["hotkeys"].get("save_song"), "shift+f5")
+print("[13] 热键 Shift+F3 → 静默保存（游戏在前台也能按，一个框都不弹）")
+check("F3 已注册", cfg["hotkeys"].get("save_song"), "shift+f3")
 ed.text.setPlainText("")
 ed.hide()                                    # 模拟"用户从没打开过编辑器"的真实场景
 n0 = len(os.listdir(hv.SONGS_DIR))
@@ -190,7 +190,7 @@ ov._record_note(2)
 ed.name_edit.setText("测试曲目")              # 这个名字库里已经有了 → 应该自动换名
 ov._toast = None
 ov.do_action("save_song")
-check("录音中按 F5 会先结束录音", ov.recording, False)
+check("录音中按 F3 会先结束录音", ov.recording, False)
 check("重名自动改成《测试曲目2》",
       os.path.exists(os.path.join(hv.SONGS_DIR, "测试曲目2.txt")), True)
 check("曲名框同步更新", ed.name_edit.text(), "测试曲目2")
@@ -201,7 +201,7 @@ txt2 = open(os.path.join(hv.SONGS_DIR, "测试曲目2.txt"), encoding="utf-8").r
 print("      文件内容:", repr(txt2))
 check("内容是刚录的两个高音", hv.clean_song_body(txt2).split(), ["^1", "^3"])
 
-print("[13b] 没有任何音符时按 F5 → 不写文件，只提示")
+print("[13b] 没有任何音符时按 Shift+F3 → 不写文件，只提示")
 ed.text.setPlainText("")
 n1 = len(os.listdir(hv.SONGS_DIR))
 ov._toast = None
