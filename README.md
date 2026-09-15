@@ -411,7 +411,8 @@ C:\Users\Admin\.workbuddy\binaries\python\envs\default\Scripts\python.exe harmon
 | `_tests/_t_smoke.py` | 交付副本冒烟：真启动交付目录那份 exe + 枚举窗口（`--noconsole` 崩溃看不见） |
 | `_tests/_t_visibility.py` | **改隐藏/热键逻辑后先跑这个**：离屏验证热键解析（含 `\|` 备选键与裸键自定义）、**所有含 F 键的组合都带 Shift**、**注入假键盘状态确认 Shift+F6 能触发、按住不连发、裸按 F 键与单按 Shift 都不触发**、面板有【隐藏窗口】且提示文字从 config 现取、编辑器联动、10 轮快速隐藏恢复。⚠️ offscreen 是回退字体、比真实屏幕宽 → **别在里面断言"提示一定画得出来"** |
 | `_tests/_t_hide.py` | 真机验证「一键隐藏 / 恢复」：注入 Shift+F6（`tap(key, shift=False)` 可注入裸 F 键），断言两个窗口真的消失 / 回来、位置不变、恢复后仍置顶、叠加层仍穿透；**裸按 F6 完全没反应**、隐藏时按 Shift+F7 / 已删除的 Shift+F4 / 裸 F4 都不会意外唤醒 |
-| `_tests/_t_zip_clean.py` | **发布前必跑**：解开 `三角洲口琴曲谱_v8.zip` → 校验中文文件名 → **PATH 只剩系统目录**（排除本机 PySide6）后启动 exe，模拟"陌生人的电脑"。改 spec 瘦身名单后必跑 |
+| `_tests/_t_zip_clean.py` | **发布前必跑**：解开 `三角洲口琴曲谱_v9.1.zip` → 校验中文文件名 → **PATH 只剩系统目录**（排除本机 PySide6）后启动 exe，模拟"陌生人的电脑"。改 spec 瘦身名单后必跑 |
+| `_tests/_diag_ui.py` | **排查界面接缝 / 配色问题先跑这个**（真机）：铺一块浅色背景板 + 摆好 Overlay/Panel/Sub 三窗口，1.8 秒后抓屏，沿水平/垂直线打印颜色变化点并存 `_diag_real.png`。⚠️ 逻辑坐标要乘 `devicePixelRatio`（本机 1.5），否则量错位置 |
 | `_tests/_shot_hold.py` | 出图：v9"接住 → 判定线吃掉一半 → 快吃完"三帧（裁判定线附近）拼成 `长音按住消除.png` |
 | `_tests/_shot_rate.py` | 出图：`跟随倍速_面板.png`（20%/100%/200% 三态小面板）+ `跟随倍速_下落对比.png`（同一时刻 100% vs 200%） |
 | `_tests/_shot_compare.py` | 出图：3 种面板状态拼成 `面板列表滚动条对比.png`（红虚线=`list_clip`，蓝=滚动条） |
