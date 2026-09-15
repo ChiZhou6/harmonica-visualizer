@@ -157,8 +157,8 @@ print("[11] 面板多了“添加曲谱”按钮，且能点中")
 panel.resize(168, 560)
 panel.grab()                       # grab 会触发 paintEvent，填充 _hit_buttons
 acts = [a for _, a in panel._hit_buttons]
-check("按钮列表", acts, ["toggle_visible", "editor", "toggle_adjust", "toggle_play",
-                        "toggle_mode", "next_song", "toggle_panel", "quit"])
+check("按钮列表", acts, ["toggle_mode", "toggle_visible", "next_song", "toggle_adjust",
+                        "toggle_play", "toggle_panel", "editor", "quit"])
 r = [rr for rr, a in panel._hit_buttons if a == "editor"][0]
 check("按钮在面板内", 0 <= r.left() and r.right() <= panel.width(), True)
 check("按钮标签", panel._button_label("editor")[0], "添加曲谱")

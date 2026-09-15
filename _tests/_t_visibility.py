@@ -94,7 +94,12 @@ check("toggle_record 是 Shift+F12", hk["toggle_record"] == [(VK_SHIFT, 0x7B)], 
 print("\n[2b] 面板按钮：有「隐藏窗口」，提示文字由 config 生成（改热键自动跟着变）")
 actions = [a for row in hv.PANEL_ROWS for a, _ in row]
 check("按钮里有 toggle_visible", "toggle_visible" in actions, actions)
-check("隐藏窗口在最上面（一眼能看到）", actions[0] == "toggle_visible", actions)
+# v9：按钮改成按热键号从小到大排（Shift+F5 → Shift+F11），「隐藏窗口」退到 Shift+F6 的位置
+check("按钮按热键号排列（F5 → F11）",
+      actions[:7],
+      ["toggle_mode", "toggle_visible", "next_song", "toggle_adjust",
+       "toggle_play", "toggle_panel", "editor"])
+check("切换模式在最上面 = Shift+F5", actions[0] == "toggle_mode", actions)
 check("按钮数量 = 8", len(actions) == 8, len(actions))
 check("隐藏窗口的提示 = Shift+F6",
       hv.hotkey_text(cfg, "toggle_visible") == "Shift+F6",

@@ -325,16 +325,18 @@ KEY_DISPLAY = {
 }
 
 # 面板按钮：一行一个（列表里每项是"一行按钮"，一行可放多个）
-# 第一个就是"隐藏窗口"——游戏里最常用的动作，放最上面一眼能看到它的热键
+# ⚠️ v9 起按「热键号从小到大」排列（用户要求 F5 → F11 连续）：
+#    所以最常用的「隐藏窗口」不再排第一，而是待在 Shift+F6 该在的位置（第 2 行）。
+#    倍速按钮不在这里 —— 它在主面板下方那个独立小面板里（见 SubPanel）。
 PANEL_ROWS = [
-    [("toggle_visible", "隐藏窗口")],
-    [("editor", "✚ 添加曲谱")],
-    [("toggle_adjust", "调整窗口")],
-    [("toggle_play", "从头重来")],
-    [("toggle_mode", "跟随演奏")],
-    [("next_song", "下一首")],
-    [("toggle_panel", "面板穿透")],
-    [("quit", "退出程序")],
+    [("toggle_mode", "跟随演奏")],      # Shift+F5
+    [("toggle_visible", "隐藏窗口")],   # Shift+F6
+    [("next_song", "下一首")],          # Shift+F7
+    [("toggle_adjust", "调整窗口")],    # Shift+F8
+    [("toggle_play", "从头重来")],      # Shift+F9
+    [("toggle_panel", "面板穿透")],     # Shift+F10
+    [("editor", "✚ 添加曲谱")],         # Shift+F11
+    [("quit", "退出程序")],             # Ctrl+Alt+Q
 ]
 
 # 录音时每行最多写多少个音（纯粹为了好看，谱面允许任意换行）
@@ -360,9 +362,13 @@ DEFAULT_CONFIG = {
     "follow_speed": 200.0,            # 音符下落速度（像素/秒）
     "follow_lead": 2.0,               # 倒计时结束后，第一个音到判定线还要多久（秒）
     "follow_window": 0.20,            # 判定窗口（秒，太早/太晚都不算）
-    # 长音（很长的矩形）：超过这个拍数就要求"按住不放"才算完成
-    "hold_min_beats": 1.5,            # 1.5 拍以上算长音（想全部改成"按一下即消"就调到很大，如 999）
+    # 跟随模式（v9 起）：每个音都"按住才消"，不再区分长短音。
+    # 超短音也至少按住这么久，免得手指还没感觉到"按住了"音就没了。
+    "hold_min_seconds": 0.15,         # 最短按住时长（秒）；调到 0 就是完全按时值
     "hold_grace": 0.20,               # 按住期间手指短暂松开多久以内不算断（秒）
+    # 跟随模式倍速：0.2 ~ 2.0 = 20% ~ 200%。
+    # 只乘在"播放时间"上 → 下落快慢、按住时长、判定窗口会一起跟着变。
+    "follow_rate": 1.0,
     "countdown_seconds": 3,           # 准备倒计时秒数
     # 8 个通道绑定的按键（顺序 = 通道 1~8）。逗号键写 comma
     "note_keys": list(DEFAULT_NOTE_KEYS),
@@ -386,6 +392,9 @@ DEFAULT_CONFIG = {
         "toggle_record": "shift+f12",
         "save_song": "shift+f3",
         "toggle_mode": "shift+f5",
+        # 跟随模式倍速：Shift+↑ 加快 / Shift+↓ 减慢（每次 10%，范围 20%~200%）
+        "rate_up": "shift+up",
+        "rate_down": "shift+down",
         "quit": "ctrl+alt+q",
     },
 }
@@ -1246,6 +1255,166 @@ class PanelWindow(QWidget):
 
 # ---------------------------------------------------------------- 音符叠加层（全宽，永远鼠标穿透）
 
+
+class SubPanel(QWidget):
+    """主面板下方的小面板（v9）：跟随模式倍速。
+
+    为什么单独开一块：倍速只在跟随模式生效，硬塞进主面板会把那 8 行热键
+    按钮挤扁（主面板已经压到按钮高度下限）；挂在下面既不挤，又和它管的
+    功能挨着。
+    """
+
+    HEIGHT = 92                        # 固定高度（内容刚好排得下）
+    PAD = 10.0
+    BTN_H = 26.0
+
+    def __init__(self, overlay):
+        super().__init__(None,
+                         Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.ov = overlay
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowOpacity(float(overlay.cfg.get("opacity", 0.94)))
+        self.setMouseTracking(True)
+        self.hover_action = None
+        self._hit_buttons = []        # [(QRectF, action)]
+
+    @property
+    def cfg(self):
+        return self.ov.cfg
+
+    # ---- Win32 样式：可点击 / 穿透（与主面板一致） ----
+    def apply_style(self):
+        try:
+            hwnd = int(self.winId())
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style |= WS_EX_LAYERED | WS_EX_NOACTIVATE
+            if self.cfg.get("panel_interactive", True):
+                style &= ~WS_EX_TRANSPARENT
+            else:
+                style |= WS_EX_TRANSPARENT
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception as e:
+            print("[sub] 设置窗口样式失败:", e)
+
+    def sync_geometry(self):
+        """贴在主面板正下方（下方没地方就挂到上方），宽度与主面板一致。"""
+        ov = self.ov
+        pw = max(100, int(ov._panel_width()))
+        x = ov.x()
+        y = ov.y() + ov.height()
+        try:
+            scr = QApplication.primaryScreen().availableGeometry()
+            if y + self.HEIGHT > scr.bottom():
+                y = ov.y() - self.HEIGHT          # 主面板贴在屏幕底边 → 挂到上方
+            y = max(scr.top(), min(y, scr.bottom() - self.HEIGHT))
+        except Exception:
+            pass
+        self.setGeometry(x, y, pw, self.HEIGHT)
+
+    def _rate_rects(self):
+        """− / ＋ 两个按钮的位置（绘制与点击共用一套算法）"""
+        w = float(self.width())
+        iw = max(40.0, w - 2 * self.PAD)
+        gap = 6.0
+        bw = (iw - gap) / 2.0
+        return [("rate_down", QRectF(self.PAD, 40.0, bw, self.BTN_H)),
+                ("rate_up", QRectF(self.PAD + bw + gap, 40.0, bw, self.BTN_H))]
+
+    def _elide(self, p, text, width):
+        fm = QFontMetrics(p.font())
+        return fm.elidedText(text, Qt.ElideRight, int(max(8.0, width)))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+        iw = max(40.0, w - 2 * self.PAD)
+        ov = self.ov
+
+        # 底：与主面板同款（左圆角 + 右边直角），看着像一体
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(1.0, 1.0, w - 1.0, h - 2.0), 11, 11)
+        path.addRect(QRectF(w - 12.0, 1.0, 12.0, h - 2.0))
+        p.setClipPath(path)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 62))
+        p.drawRect(QRectF(0, 0, w, h))
+        p.setClipping(False)
+        p.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        p.drawLine(QPointF(self.PAD, 1.5), QPointF(w - self.PAD, 1.5))
+
+        rate = ov._follow_rate()
+        live = (ov.mode == "follow")       # 只在跟随模式里真正生效 → 其他模式画淡一点
+
+        # 标题 + 数值
+        p.setPen(QColor(255, 255, 255, 240 if live else 145))
+        p.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
+        p.drawText(QRectF(self.PAD, 9.0, iw * 0.55, 16.0),
+                   Qt.AlignLeft | Qt.AlignVCenter, "跟随倍速")
+        p.setPen(QColor(0x9B, 0xD8, 0xFF, 245) if live else QColor(255, 255, 255, 140))
+        p.setFont(QFont("Microsoft YaHei UI", 12, QFont.Bold))
+        p.drawText(QRectF(self.PAD, 9.0, iw, 16.0),
+                   Qt.AlignRight | Qt.AlignVCenter, "%d%%" % round(rate * 100))
+
+        # 进度条（20% ~ 200%，中间那道刻度是 100%）
+        track = QRectF(self.PAD, 29.0, iw, 6.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 28))
+        p.drawRoundedRect(track, 3, 3)
+        k = (rate - 0.2) / 1.8
+        p.setBrush(QColor(0x9B, 0xD8, 0xFF, 205 if live else 90))
+        p.drawRoundedRect(QRectF(track.left(), track.top(),
+                                 max(4.0, track.width() * k), track.height()), 3, 3)
+        mid = track.left() + track.width() * ((1.0 - 0.2) / 1.8)
+        p.setPen(QPen(QColor(255, 255, 255, 95), 1))
+        p.drawLine(QPointF(mid, track.top() - 2.0), QPointF(mid, track.bottom() + 2.0))
+
+        # − / ＋ 按钮
+        self._hit_buttons = []
+        for action, r in self._rate_rects():
+            label = "− 减慢" if action == "rate_down" else "＋ 加快"
+            hover = (self.hover_action == action)
+            p.setPen(QPen(QColor(255, 255, 255, 60), 1))
+            p.setBrush(QColor(255, 255, 255, 58 if hover else 26))
+            p.drawRoundedRect(r, 6, 6)
+            p.setPen(QColor(255, 255, 255, 235))
+            p.setFont(QFont("Microsoft YaHei UI", 9, QFont.DemiBold))
+            p.drawText(r, Qt.AlignCenter, label)
+            self._hit_buttons.append((r, action))
+
+        # 底部提示（热键文字从 config 取 → 用户改了热键这里会自动跟着变）
+        hint = "%s 加快 · %s 减慢" % (hotkey_text(self.cfg, "rate_up"),
+                                      hotkey_text(self.cfg, "rate_down"))
+        p.setPen(QColor(255, 255, 255, 120))
+        p.setFont(QFont("Microsoft YaHei UI", 8))
+        p.drawText(QRectF(self.PAD, 71.0, iw, 13.0), Qt.AlignLeft | Qt.AlignVCenter,
+                   self._elide(p, hint, iw))
+
+    # ---- 鼠标交互 ----
+    def _button_at(self, pos):
+        for r, action in self._hit_buttons:
+            if r.contains(pos):
+                return action
+        return None
+
+    def mousePressEvent(self, e):
+        action = self._button_at(e.position())
+        if action:
+            self.ov.change_rate(0.1 if action == "rate_up" else -0.1)
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        a = self._button_at(e.position())
+        if a != self.hover_action:
+            self.hover_action = a
+            self.update()
+
+    def leaveEvent(self, e):
+        if self.hover_action:
+            self.hover_action = None
+            self.update()
+
+
 class Overlay(QWidget):
     def __init__(self, cfg, songs, panel=None):
         super().__init__(None,
@@ -1254,6 +1423,7 @@ class Overlay(QWidget):
         self.songs = songs
         self.song_idx = 0
         self.panel = panel
+        self.sub = None               # 主面板下方的小面板（倍速），由 main() 注入
 
         # 主导模式状态
         self.cursor = 0               # 下一个要弹的音符下标
@@ -1407,6 +1577,9 @@ class Overlay(QWidget):
             return
         self.panel.setGeometry(self.x(), self.y(),
                                int(self._panel_width()), self.height())
+        # 小面板（倍速）紧贴主面板下方，宽度跟着主面板走
+        if self.sub:
+            self.sub.sync_geometry()
 
     def moveEvent(self, e):
         self.sync_panel()
@@ -1545,14 +1718,61 @@ class Overlay(QWidget):
     def _follow_lead(self):
         return float(self.cfg.get("follow_lead", 2.0))
 
+    def _follow_rate(self):
+        """跟随模式倍速（0.2 ~ 2.0 = 20% ~ 200%）。
+
+        倍速只乘在"播放时间"这一个地方（见 _follow_play_time），下游就全对了：
+          - 下落：y = hit_y - (hit - play) * speed → 真实下落速度 ×rate
+          - 按住：吃掉一个音要的"曲谱秒数"不变 → 真实按住时长 ÷rate
+          - 间距：相邻音的 play 差不变 → 屏幕上块与块的距离不变（只是走得更快）
+        """
+        try:
+            r = float(self.cfg.get("follow_rate", 1.0))
+        except Exception:
+            r = 1.0
+        return max(0.2, min(2.0, r))
+
+    def change_rate(self, delta):
+        """调整跟随倍速（每次 ±10%，夹在 20% ~ 200%）。返回调整后的倍速。"""
+        cur = self._follow_rate()
+        new = round(max(0.2, min(2.0, cur + delta)), 2)
+        if abs(new - cur) < 1e-9:
+            self._say("倍速已经到%s（%d%%）"
+                      % ("上限" if delta > 0 else "下限", round(new * 100)))
+            return new
+        now = time.monotonic()
+        # 演奏中改倍速：重新对齐起点，保持"已经播放到哪"不变，
+        # 否则画面会突然往前/往后跳一下
+        if self.follow_state == "playing" and self.follow_t0 is not None:
+            play = (now - self.follow_t0) * cur
+            self.follow_t0 = now - play / new
+        self.cfg["follow_rate"] = new
+        self._save_config({"follow_rate": new})
+        self._say("跟随倍速 %d%%" % round(new * 100))
+        if self.panel:
+            self.panel.update()
+        if self.sub:
+            self.sub.update()
+        self.update()
+        return new
+
     def _follow_window(self):
-        return float(self.cfg.get("follow_window", 0.20))
+        """判定窗口（曲谱时间轴上的秒）。
+
+        乘 rate → 真实时间上的窗口保持恒定：rate=2 时 play 走得快一倍，
+        窗口也得跟着放大一倍，否则越加速越难命中。
+        """
+        return float(self.cfg.get("follow_window", 0.20)) * self._follow_rate()
 
     def _follow_play_time(self, now):
-        """当前"播放时间"（秒，相对曲首）。idle/countdown 时固定把第一个音对齐到
-        判定线上方 lead 秒处，让玩家能看清待弹的第一个音。"""
+        """当前"播放时间"（曲谱时间轴上的秒，相对曲首）。
+
+        倍速就乘在这一处（×rate）→ 下落、按住时长、判定窗口全部自动跟着变。
+        idle/countdown 时固定把第一个音对齐到判定线上方 lead 秒处，
+        让玩家能看清待弹的第一个音。
+        """
         if self.follow_state == "playing" and self.follow_t0 is not None:
-            return (now - self.follow_t0) - self._follow_lead()
+            return (now - self.follow_t0) * self._follow_rate() - self._follow_lead()
         if self.song and self.song.notes:
             return self.song.notes[0][0] * self._follow_spb() - self._follow_lead()
         return -self._follow_lead()
@@ -1577,6 +1797,12 @@ class Overlay(QWidget):
             return                       # 倒计时期间按键不判定
         if self.follow_state != "playing":
             return
+        if self.follow_hold is not None:
+            # 正按着一个音：期间再按键不算数 —— 否则连点会把"开始时刻"一直往后
+            # 刷、这个音就永远吃不完。按了别的通道 → 红闪提示一下。
+            if ch != self.follow_hold["ch"]:
+                self.wrong[ch] = now
+            return
         if self.follow_next >= len(notes):
             return
         n = notes[self.follow_next]
@@ -1588,28 +1814,31 @@ class Overlay(QWidget):
         if abs(play - hit) > self._follow_window():
             self.wrong[ch] = now          # 时机不对（太早/太晚）
             return
-        # 命中
+        # 命中：口琴本来就要长按 → 这次按下只算"接住"（灯带亮一下），
+        # 矩形不消失；要一直按住，它会被判定线一点点吃掉，按满这个音的
+        # 时值才算完成，中途松手剩下的漏过。（v9：不再区分长短音）
         self.flashes[ch] = (now, n[3])
-        self.impacts.append((now, ch, n[3]))          # 消除碰撞特效
-        if float(n[1]) >= self._hold_min_beats():
-            # 长音：这次按下只算"接住"，矩形不消失 —— 要一直按住，
-            # 它会被判定线一点点吃掉；按满整个时值才算完成，中途松手剩下的漏过。
-            self.follow_hold = {"idx": self.follow_next, "ch": ch, "state": n[3],
-                                "start": play, "dur": float(n[1]), "released": None}
-            self.update()
-            return
-        self.follow_next += 1
-        self._follow_check_done(now)
+        self.follow_hold = {"idx": self.follow_next, "ch": ch, "state": n[3],
+                            "start": play, "dur": float(n[1]), "released": None}
         self.update()
 
     # ---------- 长音（按住不放才算完成） ----------
 
-    def _hold_min_beats(self):
-        """多长的音算"长音"：默认 1.5 拍。调大了就退回"按一下即消"。"""
+    def _hold_min_seconds(self):
+        """最短按住时长（真实秒，默认 0.15）。超短音也至少要按住这么久。"""
         try:
-            return float(self.cfg.get("hold_min_beats", 1.5))
+            return float(self.cfg.get("hold_min_seconds", 0.15))
         except Exception:
-            return 1.5
+            return 0.15
+
+    def _hold_total(self, dur):
+        """一个音要"吃掉"多久（曲谱时间轴上的秒）。
+
+        按时值算（X 拍的音就按 X 拍的时间），另加最短按住时长兜底。
+        倍速下乘 rate：保证真实按住时长 = 曲谱时长 ÷ rate（越快按得越短）。
+        """
+        return max(float(dur) * self._follow_spb(),
+                   self._hold_min_seconds() * self._follow_rate())
 
     def _follow_check_done(self, now):
         if self.follow_next >= len(self.song.notes):
@@ -1621,7 +1850,7 @@ class Overlay(QWidget):
         h = self.follow_hold
         if not h:
             return 0.0
-        total = max(0.05, h["dur"] * self._follow_spb())
+        total = max(0.05, self._hold_total(h["dur"]))
         return max(0.0, min(1.0, (self._follow_play_time(now) - h["start"]) / total))
 
     def _follow_hold_tick(self, now):
@@ -1632,7 +1861,7 @@ class Overlay(QWidget):
         h = self.follow_hold
         if not h:
             return False
-        total = max(0.05, h["dur"] * self._follow_spb())
+        total = max(0.05, self._hold_total(h["dur"]))
         play = self._follow_play_time(now)
         # 关掉输入读取时无法判断松手 → 一律当作按住，免得长音永远完不成
         held = self.key_down.get(h["ch"], False) or not self._input_ok
@@ -1647,7 +1876,7 @@ class Overlay(QWidget):
             self.follow_next = h["idx"] + 1
             self.follow_hold = None
             self.wrong[h["ch"]] = now                 # 红闪一下：这里断了
-            self._say("长音没按住，漏过")
+            self._say("没按住，漏过")
             self._follow_check_done(now)
             return True
 
@@ -1657,10 +1886,34 @@ class Overlay(QWidget):
             self.impacts.append((now, h["ch"], h["state"]))
             self.follow_next = h["idx"] + 1
             self.follow_hold = None
-            self._say("长音完成")
+            self._say("完成！")
             self._follow_check_done(now)
             return True
         return False
+
+    def _follow_auto_catch(self, now):
+        """按住不放时，自动接住刚进入判定窗的下一个音（同名键连音）。
+
+        为什么需要：口琴谱里经常是同一个键连着吹好几个音（比如 1 1 1 1）。
+        如果每个音都要求"松开再按一次"，快歌根本来不及按。
+        所以只要该通道的键还按着、下一个音又正好进判定窗，就自动接住 ——
+        和真实口琴一样：按住那个音，谱面走到哪就吹到哪。
+        """
+        if self.follow_hold is not None:
+            return False
+        if self.follow_next >= len(self.song.notes):
+            return False
+        n = self.song.notes[self.follow_next]
+        if not self.key_down.get(n[2], False):
+            return False
+        play = self._follow_play_time(now)
+        hit = n[0] * self._follow_spb()
+        if abs(play - hit) > self._follow_window():
+            return False
+        self.flashes[n[2]] = (now, n[3])
+        self.follow_hold = {"idx": self.follow_next, "ch": n[2], "state": n[3],
+                            "start": play, "dur": float(n[1]), "released": None}
+        return True
 
     def _follow_advance_missed(self, now):
         """把已经错过判定窗口的音符标记为 miss 并跳过"""
@@ -1766,12 +2019,17 @@ class Overlay(QWidget):
                 self.hide()
                 if self.panel:
                     self.panel.hide()
+                if self.sub:
+                    self.sub.hide()
             else:
                 self.show()
                 self.raise_()
                 if self.panel:
                     self.panel.show()
                     self.panel.raise_()
+                if self.sub:
+                    self.sub.show()
+                    self.sub.raise_()
                 if self._editor_was_visible and self.editor:
                     # 用 show() 不用 show_editor()：后者会抢焦点，从游戏里切出来会打断游戏
                     self.editor.show()
@@ -1807,6 +2065,10 @@ class Overlay(QWidget):
             # 走全局轮询热键（不依赖窗口焦点）：游戏在前台时按 F3 也能把刚录的曲谱存下来
             if self.editor:
                 self.editor.save_quick()
+        elif action == "rate_up":
+            self.change_rate(0.1)
+        elif action == "rate_down":
+            self.change_rate(-0.1)
         elif action == "quit":
             self.save_geometry()
             QApplication.quit()
@@ -1840,12 +2102,15 @@ class Overlay(QWidget):
                     # 从判定线上方 lead 秒处开始下落（与 idle 时的静止位置平滑衔接）
                     first = (self.song.notes[0][0] * self._follow_spb()
                              if self.song.notes else 0.0)
-                    self.follow_t0 = mono - first
+                    # 除以倍速：倒计时结束那一刻 play 正好 = first - lead，
+                    # 与 idle 时的静止位置无缝衔接，倍速下也不会"跳一下"
+                    self.follow_t0 = mono - first / self._follow_rate()
                     self.follow_state = "playing"
                     self._say("开始！")
             elif self.follow_state == "playing":
-                self._follow_hold_tick(mono)      # 长音：按住 → 被吃掉 → 按满才消
+                self._follow_hold_tick(mono)      # 按住 → 被判定线吃掉 → 按满才消
                 self._follow_advance_missed(mono)
+                self._follow_auto_catch(mono)     # 还按着 → 自动接住下一个音
 
         if self.finished_at and self.cfg.get("loop", True) and mono - self.finished_at > 1.2:
             self.reset_playback()
@@ -2091,16 +2356,22 @@ class Overlay(QWidget):
                 continue
             rect = QRectF(x0 + ch * ch_w + ch_w * 0.22, y_start, ch_w * 0.56, bh)
             holding = bool(self.follow_hold and self.follow_hold["idx"] == i)
+            if holding:
+                # 正被按住：判定线以下的部分就是"已经被吃掉"的了 → 裁掉不画。
+                # 于是画面上看到的就是判定线在一点点把它吞进去。
+                # （几何上刚好同步：按满时整块正好滑到判定线下方，自然消失）
+                p.save()
+                p.setClipRect(QRectF(0.0, 0.0, w, hit_y))
             self._draw_block(p, rect, st, ch,
                              highlight=(i == self.follow_next and not holding))
             if holding:
-                # 长音正被按住：亮描边 + 判定线上一条随进度收缩的同色光带，
-                # 让"这块正在被判定线一点点吃掉"看得见
+                # 亮描边 + 判定线上一条随进度收缩的同色光带
                 prog = self._follow_hold_progress(now)
                 p.setPen(QPen(QColor(255, 255, 255, int(210 - 110 * prog)), 2))
                 p.setBrush(Qt.NoBrush)
                 rad = min(12.0, max(3.0, rect.width() / 2.0))
                 p.drawRoundedRect(rect.adjusted(-2.0, -2.0, 2.0, 2.0), rad, rad)
+                p.restore()
                 bw = max(4.0, ch_w * 0.56 * (1.0 - prog))
                 c = QColor(STATE_STYLE[st]["fill"])
                 c.setAlpha(180)
@@ -2131,7 +2402,7 @@ class Overlay(QWidget):
                 p.drawText(QRectF(x0, hit_y * 0.30 + 30, w - x0, 24), Qt.AlignCenter,
                            "弹对第一个音「%s」开始" % KEY_LABELS[first[2]])
             p.drawText(QRectF(x0, hit_y * 0.30 + 54, w - x0, 24), Qt.AlignCenter,
-                       "开始前倒计时 %d 秒 · 长条要按住不放"
+                       "开始前倒计时 %d 秒 · 每个音都要按住直到被吃掉"
                        % int(self.cfg.get("countdown_seconds", 3)))
 
         # 倒计时大数字
@@ -2152,6 +2423,13 @@ class Overlay(QWidget):
             p.setFont(QFont("Microsoft YaHei UI", 14, QFont.DemiBold))
             p.drawText(QRectF(x0, hit_y * 0.42, w - x0, 30), Qt.AlignCenter,
                        "演奏完成")
+
+        # 当前倍速（右上角，非 100% 时更亮，方便一眼确认）
+        rate = self._follow_rate()
+        p.setPen(QColor(255, 255, 255, 205 if abs(rate - 1.0) > 1e-9 else 95))
+        p.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
+        p.drawText(QRectF(x0, 6.0, w - x0 - 10.0, 18.0),
+                   Qt.AlignRight | Qt.AlignVCenter, "倍速 %d%%" % round(rate * 100))
 
     def _draw_impacts(self, p, x0, ch_w, hit_y):
         """消除碰撞特效：命中音符时，在灯带/判定线上泛起一圈淡色光晕并扩散淡出，
@@ -2748,15 +3026,20 @@ def main():
     ov = Overlay(cfg, songs)
     panel = PanelWindow(ov)
     ov.panel = panel
+    sub = SubPanel(ov)                # 主面板下方的小面板：跟随模式倍速
+    ov.sub = sub
     editor = SongEditor(ov)
     ov.editor = editor
     ov.sync_panel()
     ov.show()
     panel.show()
     panel.raise_()
+    sub.show()
+    sub.raise_()
     ov._save_config({"hotkeys": cfg["hotkeys"]})     # 把新增热键写回 config.json
     QTimer.singleShot(200, ov._apply_clickthrough)
     QTimer.singleShot(220, panel.apply_style)
+    QTimer.singleShot(240, sub.apply_style)
     print(SAFETY_NOTE)
     print("按键：%s" % " ".join(KEY_LABELS))
     print("热键（都要按住 Shift，避免和游戏里的 F 键抢键）：")
@@ -2765,6 +3048,8 @@ def main():
                       ("toggle_panel", "面板穿透"), ("editor", "曲谱编辑器"),
                       ("toggle_record", "开始/结束录音"), ("save_song", "保存曲谱"),
                       ("toggle_mode", "切换 经典/跟随演奏 模式"),
+                      ("rate_up", "跟随倍速 +10%（最快 200%）"),
+                      ("rate_down", "跟随倍速 -10%（最慢 20%）"),
                       ("quit", "退出")):
         print("  %-20s %s" % (hotkey_text(cfg, act, " / "), name))
     print("也可以直接用鼠标点击窗口左侧面板上的按钮。")
@@ -2788,6 +3073,8 @@ if __name__ == "__main__":
               "| VK:", ["0x%02X" % (vk_of(k) or 0) for k in (c.get("note_keys") or DEFAULT_NOTE_KEYS)])
         print("热键:", ", ".join("%s=%s" % (k, v) for k, v in c["hotkeys"].items()))
         print("面板按钮:", ", ".join(a for row in PANEL_ROWS for a, _ in row))
+        print("跟随倍速:", c.get("follow_rate"),
+              "| 最短按住:", c.get("hold_min_seconds"), "秒")
         print("keyboard_monitor:", c.get("keyboard_monitor"),
               "| panel_width:", c.get("panel_width"),
               "| panel_interactive:", c.get("panel_interactive"))

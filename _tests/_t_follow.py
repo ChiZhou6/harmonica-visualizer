@@ -103,9 +103,13 @@ hit_now = 103.0 + lead          # 第一个音的命中时刻
 check("播放时间对齐（第一个音在判定线）",
       round(ov._follow_play_time(hit_now), 4), round(first, 4))
 
-# 在正确时刻按对 → 命中，follow_next 前进
+# 在正确时刻按对 → v9 起只算"接住"，按住吃满时值才前进
 ov._follow_press(0, hit_now)
-check("第一个音命中 follow_next=1", ov.follow_next, 1)
+check("第一个音接住（进入按住状态）", ov.follow_hold is not None, True)
+check("接住时 follow_next 还没动", ov.follow_next, 0)
+ov.key_down[0] = True
+ov._follow_hold_tick(hit_now + 0.5)        # 该音 1 拍 = 0.5 秒
+check("按住吃满 1 拍 → follow_next=1", ov.follow_next, 1)
 
 # 时机太早（超窗口）→ 不命中
 ov.follow_next = 1
