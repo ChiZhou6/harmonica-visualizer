@@ -158,6 +158,56 @@ sub.apply_style()
 panel.apply_style()
 check("穿透切换无异常", True, True)
 
+print("[12] 接缝 / 配色修复（v9.1）")
+from PySide6.QtGui import QColor, QImage                       # noqa: E402
+
+BASE = QColor(10, 20, 30)
+
+
+def render_on(widget):
+    """把窗口画到一张预填色的图上。
+
+    没被画到的地方会保留预填色 → 于是"该画却没画"的地方能被抓出来
+    （小面板最右 12px 之前就是整条漏空的）。
+    """
+    img = QImage(widget.width(), widget.height(), QImage.Format_ARGB32)
+    img.fill(BASE)
+    widget.render(img)
+    return img
+
+
+def rgb(img, x, y):
+    return img.pixelColor(int(x), int(y)).getRgb()[:3]
+
+
+check("提示顺序：先'减慢'后'加快'",
+      sub._hint_text().index("减慢") < sub._hint_text().index("加快"), True)
+check("提示文字", sub._hint_text(), "Shift+↓ 减慢 · Shift+↑ 加快")
+
+ov.cfg["bg_alpha"] = 150
+sub_img = render_on(sub)
+check("小面板最右 12px 画上了底色（不再漏空）",
+      rgb(sub_img, sub.width() - 6, 4), rgb(sub_img, sub.width() / 2, 4))
+check("小面板右边不是空的（没露桌面）",
+      rgb(sub_img, sub.width() - 6, 4) != (10, 20, 30), True)
+
+pan_img = render_on(panel)
+blank = [rgb(pan_img, x, 6) for x in range(16, int(panel.width()) - 5, 8)]
+check("主面板不再自带底色（顶部整条留白都是透明的）",
+      all(c == (10, 20, 30) for c in blank), True)
+dev = max(sum(abs(a - b) for a, b in zip(rgb(pan_img, x, panel.height() // 2),
+                                         (10, 20, 30)))
+          for x in range(int(panel.width()) - 3, int(panel.width())))
+check("右侧分隔线还在（只是更淡）", dev > 5, True)
+
+# 小面板贴在下方时：主面板左下角、小面板左上角都要补成直角，
+# 否则两个窗口之间会露出一个约 12×12 的桌面缺口（同款"像没拼接好"）
+ov_img = render_on(ov)
+check("主面板左下角补成直角（与小面板接上）",
+      rgb(ov_img, 3, ov.height() - 3) != (10, 20, 30), True)
+check("小面板左上角补成直角（与主面板接上）",
+      rgb(sub_img, 3, 3) != (10, 20, 30), True)
+
 sub.close()
 panel.close()
 ov.close()

@@ -743,6 +743,20 @@ user32 = ctypes.windll.user32
 
 # ---------------------------------------------------------------- 左侧控制面板（独立小窗，可点击）
 
+def square_plate_corner(path, w, h, corner, r=12.0):
+    """把圆角矩形某个角的圆弧补成直角（v9.1）。
+
+    小面板贴在主面板下方/上方时，那一侧的圆角会在两个窗口之间留一个
+    约 r×r 的缺口，看着又像"没拼接好"。这里用"圆角矩形 ∪ (角上小方块 − 圆角矩形)"
+    把那一角填成直角，两块板就接成一条直边了。
+    """
+    x = 0.5 if "l" in corner else w - 0.5 - r
+    y = 0.5 if "t" in corner else h - 0.5 - r
+    notch = QPainterPath()
+    notch.addRect(QRectF(x, y, r, r))
+    return path.united(notch.subtracted(path))
+
+
 class PanelWindow(QWidget):
     def __init__(self, overlay):
         super().__init__(None,
@@ -898,16 +912,12 @@ class PanelWindow(QWidget):
         w, h = lay["w"], lay["h"]
         ov = self.ov
 
-        # 面板底（左圆角、右边直角，与整块背景板拼成一体）
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(1.0, 1.0, w - 1.0, h - 2.0), 11, 11)
-        path.addRect(QRectF(w - 12.0, 1.0, 12.0, h - 2.0))
-        p.setClipPath(path)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 62))
-        p.drawRect(QRectF(0, 0, w, h))
-        p.setClipping(False)
-        p.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        # 面板底（v9.1 起不再自己画）：背景完全交给叠加层那块大板。
+        # 以前这里又叠了一层黑，左面板就比音符区暗一档，看着像"两块板没拼好"；
+        # 而且那句 addRect 在 Qt 默认的"奇偶填充"规则下会被当成挖空，
+        # 面板最右 12px 根本没画上（接缝处那道竖条）。现在两个问题一起消失：
+        # 左面板和音符区就是同一块背景，只留一条很淡的竖线做分隔。
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1))
         p.drawLine(QPointF(w - 1.5, 10), QPointF(w - 1.5, h - 10))
 
         # 标题
@@ -1324,6 +1334,15 @@ class SubPanel(QWidget):
         fm = QFontMetrics(p.font())
         return fm.elidedText(text, Qt.ElideRight, int(max(8.0, width)))
 
+    def _hint_text(self):
+        """底部热键提示。
+
+        顺序必须跟上面两个按钮一致：左边是"− 减慢"、右边是"＋ 加快"。
+        （v9.1 修：以前先写"加快"，提示正好落到"减慢"按钮底下，看着像写反了）
+        """
+        return "%s 减慢 · %s 加快" % (hotkey_text(self.cfg, "rate_down"),
+                                      hotkey_text(self.cfg, "rate_up"))
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1331,16 +1350,23 @@ class SubPanel(QWidget):
         iw = max(40.0, w - 2 * self.PAD)
         ov = self.ov
 
-        # 底：与主面板同款（左圆角 + 右边直角），看着像一体
+        # 底：颜色与叠加层那块大板完全一致（同色同透明度、只一层）——
+        # 这样小面板和上面的左面板 / 音符区看起来就是同一块板。
+        # ⚠️ 必须显式设 WindingFill：Qt 的 QPainterPath 默认是"奇偶填充"，
+        # 下面那句 addRect 与圆角矩形重叠的区域会被当成挖空，
+        # 小面板最右 12px 会整条漏空（就是"右边像被切掉一小块"的元凶）。
         path = QPainterPath()
-        path.addRoundedRect(QRectF(1.0, 1.0, w - 1.0, h - 2.0), 11, 11)
-        path.addRect(QRectF(w - 12.0, 1.0, 12.0, h - 2.0))
+        path.setFillRule(Qt.WindingFill)
+        # 上边从 0 起：紧贴主面板底边，不留那 1px 缝
+        path.addRoundedRect(QRectF(1.0, 0.0, w - 1.0, h - 1.0), 11, 11)
+        path.addRect(QRectF(w - 12.0, 0.0, 12.0, h - 1.0))       # 右边直角
+        path.addRect(QRectF(1.0, 0.0, 12.0, 12.0))               # 左上直角（接主面板）
         p.setClipPath(path)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 62))
+        p.setBrush(QColor(24, 22, 19, int(self.cfg.get("bg_alpha", 150))))
         p.drawRect(QRectF(0, 0, w, h))
         p.setClipping(False)
-        p.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        p.setPen(QPen(QColor(255, 255, 255, 16), 1))
         p.drawLine(QPointF(self.PAD, 1.5), QPointF(w - self.PAD, 1.5))
 
         rate = ov._follow_rate()
@@ -1383,8 +1409,7 @@ class SubPanel(QWidget):
             self._hit_buttons.append((r, action))
 
         # 底部提示（热键文字从 config 取 → 用户改了热键这里会自动跟着变）
-        hint = "%s 加快 · %s 减慢" % (hotkey_text(self.cfg, "rate_up"),
-                                      hotkey_text(self.cfg, "rate_down"))
+        hint = self._hint_text()
         p.setPen(QColor(255, 255, 255, 120))
         p.setFont(QFont("Microsoft YaHei UI", 8))
         p.drawText(QRectF(self.PAD, 71.0, iw, 13.0), Qt.AlignLeft | Qt.AlignVCenter,
@@ -2138,9 +2163,18 @@ class Overlay(QWidget):
         x0, ch_w, pad = self._note_geometry()
         hit_y = h - float(self.cfg.get("hit_line_offset", 10))
 
+        # 背景板：小面板贴在下方（或上方）时，把对应那一侧的左圆角补成直角，
+        # 否则两窗口之间会露出一个 12×12 的桌面缺口（又是"像没拼接好"）
+        plate = QPainterPath()
+        plate.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 12, 12)
+        if self.sub is not None and self.sub.isVisible():
+            if self.sub.y() >= self.y() + self.height() - 4:
+                plate = square_plate_corner(plate, w, h, "bl")
+            elif self.sub.y() + self.sub.height() <= self.y() + 4:
+                plate = square_plate_corner(plate, w, h, "tl")
         p.setPen(QPen(QColor(255, 255, 255, 60), 1))
         p.setBrush(QColor(24, 22, 19, int(self.cfg.get("bg_alpha", 150))))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 12, 12)
+        p.drawPath(plate)
 
         # 通道分隔线
         p.setPen(QPen(QColor(255, 255, 255, 22), 1))
