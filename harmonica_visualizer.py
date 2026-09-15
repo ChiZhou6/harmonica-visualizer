@@ -358,6 +358,9 @@ DEFAULT_CONFIG = {
     "leader_strict_modifier": False,  # 是否必须同时按住修饰键才算弹对
     # 演奏模式：classic = 经典（音符堆叠消除）；follow = 跟随演奏（音符按时值下落，音游式）
     "mode": "classic",
+    # 经典模式音符块长度系数：0.5 ~ 2.0 = 50% ~ 200%（只缩放"长度"，宽度不变）。
+    # 块的长度 = 拍数 × 单位长度，所以乘完长音仍按比例更长 —— 跟长短音无关，是整体缩放。
+    "leader_block_scale": 1.0,
     # —— 跟随演奏模式参数 ——
     "follow_speed": 200.0,            # 音符下落速度（像素/秒）
     "follow_lead": 2.0,               # 倒计时结束后，第一个音到判定线还要多久（秒）
@@ -1267,11 +1270,14 @@ class PanelWindow(QWidget):
 
 
 class SubPanel(QWidget):
-    """主面板下方的小面板（v9）：跟随模式倍速。
+    """主面板下方的小面板（v9.2 起"双面"）。
 
-    为什么单独开一块：倍速只在跟随模式生效，硬塞进主面板会把那 8 行热键
-    按钮挤扁（主面板已经压到按钮高度下限）；挂在下面既不挤，又和它管的
-    功能挨着。
+    · 跟随模式（且没在录音）→ 「跟随倍速」20% ~ 200%
+    · 经典模式 / 录音模式   → 「方块长度」50% ~ 200%（缩放经典模式音符块的长短）
+
+    为什么单独开一块：这两项都只在各自模式下生效，硬塞进主面板会把那 8 行热键
+    按钮挤扁（主面板已经压到按钮高度下限）；挂在下面既不挤，又和它管的功能挨着。
+    快捷键两组共用 Shift+↑/↓，按当前模式自动分派（见 Overlay._sub_kind）。
     """
 
     HEIGHT = 92                        # 固定高度（内容刚好排得下）
@@ -1321,27 +1327,62 @@ class SubPanel(QWidget):
             pass
         self.setGeometry(x, y, pw, self.HEIGHT)
 
-    def _rate_rects(self):
+    def _view(self):
+        """当前该显示哪一套（标题 / 数值 / 范围 / 按钮 / 用词 / 主色）。
+
+        kind 由 Overlay._sub_kind() 决定：跟随模式 → rate；经典 / 录音 → block。
+        画什么、点什么、提示写什么全部从这一处取 → 三处不会各写一份而跑偏。
+        """
+        ov = self.ov
+        if ov._sub_kind() == "rate":
+            return {
+                "kind": "rate",
+                "title": "跟随倍速",
+                "value": ov._follow_rate(),
+                "lo": 0.2, "hi": 2.0,
+                "actions": ("rate_down", "rate_up"),
+                "hotkeys": ("rate_down", "rate_up"),   # 提示文字取的热键名
+                "labels": ("− 减慢", "＋ 加快"),
+                "words": ("减慢", "加快"),
+                "accent": QColor(0x9B, 0xD8, 0xFF),      # 冷蓝：和上面的倍速数值同色
+            }
+        return {
+            "kind": "block",
+            "title": "方块长度",
+            "value": ov._leader_scale(),
+            "lo": 0.5, "hi": 2.0,
+            "actions": ("block_down", "block_up"),
+            # 两组共用同一对热键（Shift+↓ / Shift+↑），只是作用对象不同
+            "hotkeys": ("rate_down", "rate_up"),
+            "labels": ("− 缩短", "＋ 拉长"),
+            "words": ("缩短", "拉长"),
+            "accent": QColor(0xF3, 0xC9, 0x7E),          # 暖金：一眼区分"这是经典那套"
+        }
+
+    def _btn_rects(self):
         """− / ＋ 两个按钮的位置（绘制与点击共用一套算法）"""
         w = float(self.width())
         iw = max(40.0, w - 2 * self.PAD)
         gap = 6.0
         bw = (iw - gap) / 2.0
-        return [("rate_down", QRectF(self.PAD, 40.0, bw, self.BTN_H)),
-                ("rate_up", QRectF(self.PAD + bw + gap, 40.0, bw, self.BTN_H))]
+        a_dn, a_up = self._view()["actions"]
+        return [(a_dn, QRectF(self.PAD, 40.0, bw, self.BTN_H)),
+                (a_up, QRectF(self.PAD + bw + gap, 40.0, bw, self.BTN_H))]
 
     def _elide(self, p, text, width):
         fm = QFontMetrics(p.font())
         return fm.elidedText(text, Qt.ElideRight, int(max(8.0, width)))
 
     def _hint_text(self):
-        """底部热键提示。
+        """底部热键提示（两组模式共用 Shift+↑/↓，所以按当前模式取词）。
 
-        顺序必须跟上面两个按钮一致：左边是"− 减慢"、右边是"＋ 加快"。
+        顺序必须跟上面两个按钮一致：左边是「−」、右边是「＋」。
         （v9.1 修：以前先写"加快"，提示正好落到"减慢"按钮底下，看着像写反了）
+        （v9.2 起：文案跟着 _view() 走，经典模式显示"缩短 / 拉长"）
         """
-        return "%s 减慢 · %s 加快" % (hotkey_text(self.cfg, "rate_down"),
-                                      hotkey_text(self.cfg, "rate_up"))
+        v = self._view()
+        return "%s %s · %s %s" % (hotkey_text(self.cfg, v["hotkeys"][0]), v["words"][0],
+                                  hotkey_text(self.cfg, v["hotkeys"][1]), v["words"][1])
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1369,36 +1410,42 @@ class SubPanel(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 16), 1))
         p.drawLine(QPointF(self.PAD, 1.5), QPointF(w - self.PAD, 1.5))
 
-        rate = ov._follow_rate()
-        live = (ov.mode == "follow")       # 只在跟随模式里真正生效 → 其他模式画淡一点
+        v = self._view()
+        val, lo, hi = v["value"], v["lo"], v["hi"]
+        accent = v["accent"]
 
         # 标题 + 数值
-        p.setPen(QColor(255, 255, 255, 240 if live else 145))
+        p.setPen(QColor(255, 255, 255, 240))
         p.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
         p.drawText(QRectF(self.PAD, 9.0, iw * 0.55, 16.0),
-                   Qt.AlignLeft | Qt.AlignVCenter, "跟随倍速")
-        p.setPen(QColor(0x9B, 0xD8, 0xFF, 245) if live else QColor(255, 255, 255, 140))
+                   Qt.AlignLeft | Qt.AlignVCenter, v["title"])
+        c = QColor(accent)
+        c.setAlpha(245)
+        p.setPen(c)
         p.setFont(QFont("Microsoft YaHei UI", 12, QFont.Bold))
         p.drawText(QRectF(self.PAD, 9.0, iw, 16.0),
-                   Qt.AlignRight | Qt.AlignVCenter, "%d%%" % round(rate * 100))
+                   Qt.AlignRight | Qt.AlignVCenter, "%d%%" % round(val * 100))
 
-        # 进度条（20% ~ 200%，中间那道刻度是 100%）
+        # 进度条（左端 lo、右端 hi，中间那道刻度是 100%）
         track = QRectF(self.PAD, 29.0, iw, 6.0)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(255, 255, 255, 28))
         p.drawRoundedRect(track, 3, 3)
-        k = (rate - 0.2) / 1.8
-        p.setBrush(QColor(0x9B, 0xD8, 0xFF, 205 if live else 90))
+        k = max(0.0, min(1.0, (val - lo) / (hi - lo)))
+        bar = QColor(accent)
+        bar.setAlpha(205)
+        p.setBrush(bar)
         p.drawRoundedRect(QRectF(track.left(), track.top(),
                                  max(4.0, track.width() * k), track.height()), 3, 3)
-        mid = track.left() + track.width() * ((1.0 - 0.2) / 1.8)
+        mid = track.left() + track.width() * ((1.0 - lo) / (hi - lo))
         p.setPen(QPen(QColor(255, 255, 255, 95), 1))
         p.drawLine(QPointF(mid, track.top() - 2.0), QPointF(mid, track.bottom() + 2.0))
 
         # − / ＋ 按钮
         self._hit_buttons = []
-        for action, r in self._rate_rects():
-            label = "− 减慢" if action == "rate_down" else "＋ 加快"
+        rects = self._btn_rects()
+        for i, (action, r) in enumerate(rects):
+            label = v["labels"][i]
             hover = (self.hover_action == action)
             p.setPen(QPen(QColor(255, 255, 255, 60), 1))
             p.setBrush(QColor(255, 255, 255, 58 if hover else 26))
@@ -1424,9 +1471,14 @@ class SubPanel(QWidget):
 
     def mousePressEvent(self, e):
         action = self._button_at(e.position())
-        if action:
-            self.ov.change_rate(0.1 if action == "rate_up" else -0.1)
-            self.update()
+        if not action:
+            return
+        d = 0.1 if action.endswith("_up") else -0.1
+        if action.startswith("rate_"):
+            self.ov.change_rate(d)
+        else:
+            self.ov.change_block_scale(d)
+        self.update()
 
     def mouseMoveEvent(self, e):
         a = self._button_at(e.position())
@@ -1985,6 +2037,8 @@ class Overlay(QWidget):
             self.editor.set_recording_ui(on)
         if self.panel:
             self.panel.update()
+        if self.sub:
+            self.sub.update()      # 录音视图算"经典" → 小面板切成方块长度
         self.update()
 
     def _record_note(self, ch):
@@ -2067,6 +2121,8 @@ class Overlay(QWidget):
             self.mode = "classic" if self.mode == "follow" else "follow"
             self.reset_playback()
             self._save_config({"mode": self.mode})
+            if self.sub:
+                self.sub.update()          # 小面板跟着换内容（倍速 ↔ 方块长度）
             if self.mode == "follow":
                 self._say("已切到【跟随演奏】：弹对第一个音开始，之后音符按时值下落")
             else:
@@ -2090,10 +2146,14 @@ class Overlay(QWidget):
             # 走全局轮询热键（不依赖窗口焦点）：游戏在前台时按 F3 也能把刚录的曲谱存下来
             if self.editor:
                 self.editor.save_quick()
-        elif action == "rate_up":
-            self.change_rate(0.1)
-        elif action == "rate_down":
-            self.change_rate(-0.1)
+        elif action in ("rate_up", "rate_down"):
+            d = 0.1 if action == "rate_up" else -0.1
+            # Shift+↑/↓ 两组模式共用：跟随模式调倍速，经典 / 录音模式调方块长度。
+            # 两者各只在自模式下有意义，所以同一个键不会互相打架。
+            if self._sub_kind() == "rate":
+                self.change_rate(d)
+            else:
+                self.change_block_scale(d)
         elif action == "quit":
             self.save_geometry()
             QApplication.quit()
@@ -2237,8 +2297,46 @@ class Overlay(QWidget):
         p.setFont(QFont("Consolas", fsize, QFont.Bold))
         p.drawText(rect, Qt.AlignCenter, KEY_LABELS[ch])
 
+    def _leader_scale(self):
+        """经典模式音符块长度系数（0.5 ~ 2.0 = 50% ~ 200%）。
+
+        只缩放"长度"（块的高度），宽度不变；块的长度 = 拍数 × 单位长度，
+        所以乘完长音仍然按比例更长，是整体一起变长短（跟长音/短音无关）。
+        """
+        try:
+            k = float(self.cfg.get("leader_block_scale", 1.0))
+        except Exception:
+            k = 1.0
+        return max(0.5, min(2.0, k))
+
+    def change_block_scale(self, delta):
+        """调整经典模式方块长度（每次 ±10%，夹在 50% ~ 200%）。返回调整后的系数。"""
+        cur = self._leader_scale()
+        new = round(max(0.5, min(2.0, cur + delta)), 2)
+        if abs(new - cur) < 1e-9:
+            self._say("方块长度已经到%s（%d%%）"
+                      % ("上限" if delta > 0 else "下限", round(new * 100)))
+            return new
+        self.cfg["leader_block_scale"] = new
+        self._save_config({"leader_block_scale": new})
+        self._say("方块长度 %d%%" % round(new * 100))
+        if self.panel:
+            self.panel.update()
+        if self.sub:
+            self.sub.update()
+        self.update()
+        return new
+
+    def _sub_kind(self):
+        """小面板当前该显示谁：跟随模式（且没在录音）→ 倍速；经典 / 录音 → 方块长度。
+
+        录音视图走的是"经典"那一套画法，所以录音时算经典。
+        """
+        return "rate" if (self.mode == "follow" and not self.recording) else "block"
+
     def _leader_unit(self):
-        return max(22.0, min(36.0, self.height() * 0.06))
+        # 单位长度按"方块长度"系数缩放 → 所有块一起变长变短（宽度不变）
+        return max(22.0, min(36.0, self.height() * 0.06)) * self._leader_scale()
 
     def _draw_leader(self, p, x0, ch_w, hit_y):
         unit = self._leader_unit()
@@ -2322,12 +2420,13 @@ class Overlay(QWidget):
                    "已录 %d 个音 · %s 结束" % (self.rec_count, self.hk("toggle_record")))
 
         # 最近弹的音：从右往左排（最新的在最右）
-        unit = 30.0
+        # 大小跟着"方块长度"走 → 在录音模式调长度时能立刻看到变化
+        unit = 30.0 * self._leader_scale()
         gap = 4.0
         avail = max(60.0, w - x0 - 16.0)
         cap = max(1, int((avail + gap) // (unit + gap)))
         tail = self.rec_log[-cap:] if self.rec_log else []
-        ty = hit_y - 46.0
+        ty = hit_y - unit - 16.0           # 方块变长时整排往上让，别压到判定线
         bx = w - 8.0 - len(tail) * (unit + gap) + gap
         for i, (ch, st) in enumerate(tail):
             r = QRectF(bx + i * (unit + gap), ty, unit, unit)
@@ -2336,7 +2435,8 @@ class Overlay(QWidget):
             p.setBrush(QColor(style["fill"]))
             p.drawRoundedRect(r, 8, 8)
             p.setPen(QColor(style["text"]))
-            p.setFont(QFont("Microsoft YaHei UI", 10, QFont.DemiBold))
+            p.setFont(QFont("Microsoft YaHei UI",
+                            int(max(8.0, min(unit * 0.34, 22.0))), QFont.DemiBold))
             p.drawText(r, Qt.AlignCenter, KEY_LABELS[ch])
 
         # 当前按下的通道：在该通道位置闪一道色
@@ -3082,8 +3182,8 @@ def main():
                       ("toggle_panel", "面板穿透"), ("editor", "曲谱编辑器"),
                       ("toggle_record", "开始/结束录音"), ("save_song", "保存曲谱"),
                       ("toggle_mode", "切换 经典/跟随演奏 模式"),
-                      ("rate_up", "跟随倍速 +10%（最快 200%）"),
-                      ("rate_down", "跟随倍速 -10%（最慢 20%）"),
+                      ("rate_up", "跟随倍速 +10%（最快 200%）／ 经典模式方块 +10%（最长 200%）"),
+                      ("rate_down", "跟随倍速 -10%（最慢 20%）／ 经典模式方块 -10%（最短 50%）"),
                       ("quit", "退出")):
         print("  %-20s %s" % (hotkey_text(cfg, act, " / "), name))
     print("也可以直接用鼠标点击窗口左侧面板上的按钮。")
@@ -3108,7 +3208,8 @@ if __name__ == "__main__":
         print("热键:", ", ".join("%s=%s" % (k, v) for k, v in c["hotkeys"].items()))
         print("面板按钮:", ", ".join(a for row in PANEL_ROWS for a, _ in row))
         print("跟随倍速:", c.get("follow_rate"),
-              "| 最短按住:", c.get("hold_min_seconds"), "秒")
+              "| 最短按住:", c.get("hold_min_seconds"), "秒",
+              "| 经典方块长度:", c.get("leader_block_scale"))
         print("keyboard_monitor:", c.get("keyboard_monitor"),
               "| panel_width:", c.get("panel_width"),
               "| panel_interactive:", c.get("panel_interactive"))

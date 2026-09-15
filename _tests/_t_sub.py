@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""V9 倍速小面板 离屏测试
+"""小面板（v9.2 双面）离屏测试
 
-小面板紧贴主面板下方、宽度跟着主面板走、屏幕下方放不下时挂到上方、
-按钮点击能改倍速、窄面板也能画、面板穿透同步。
+小面板紧贴主面板下方、宽度跟着主面板走、屏幕下方放不下时挂到上方；
+· 跟随模式（且没在录音）→ 显示「跟随倍速」，两个按钮点的是倍速
+· 经典 / 录音模式        → 显示「方块长度」，两个按钮点的是块长
+提示文字、按钮命中区、极端值重绘、面板穿透、接缝配色（v9.1）。
 """
 import os
 import sys
@@ -54,6 +56,20 @@ ov.panel = panel
 sub = hv.SubPanel(ov)
 ov.sub = sub
 
+
+def rect_of(action):
+    sub.grab()                      # 强制重画 → 命中区是最新的
+    for r, a in sub._hit_buttons:
+        if a == action:
+            return r
+    raise AssertionError("找不到按钮 " + action)
+
+
+def click(action):
+    r = rect_of(action)
+    sub.mousePressEvent(Ev(r.center().x(), r.center().y()))
+
+
 print("[1] 面板按钮按热键号排列（F5 → F11）")
 order = [a for row in hv.PANEL_ROWS for a, _ in row]
 check("按钮顺序", order, ["toggle_mode", "toggle_visible", "next_song",
@@ -97,59 +113,87 @@ check("挂到主面板上方", sub.y(), ov.y() - hv.SubPanel.HEIGHT)
 check("没跑出屏幕顶部", sub.y() >= scr.top(), True)
 check("底边没超出屏幕", sub.y() + sub.height() <= scr.bottom(), True)
 
-print("[5] 绘制与按钮命中区")
+print("[5] 双面：跟随模式显示倍速，经典 / 录音模式显示方块长度")
 ov.resize(880, 563)
 ov.move(100, 100)
 ov.sync_panel()
 sub.show()
-pm = sub.grab()
-check("截图非空", (pm.width(), pm.height()), (168, hv.SubPanel.HEIGHT))
-check("有 ± 两个按钮", len(sub._hit_buttons), 2)
-check("按钮动作名", [a for _, a in sub._hit_buttons], ["rate_down", "rate_up"])
-check("按钮都在面板内", all(r.right() <= 168 and r.bottom() <= hv.SubPanel.HEIGHT
-                            for r, _ in sub._hit_buttons), True)
 
-print("[6] 点 ＋ / − 改倍速")
+ov.mode = "follow"
+ov.recording = False
+v = sub._view()
+check("跟随模式 → kind", v["kind"], "rate")
+check("跟随模式 → 标题", v["title"], "跟随倍速")
+check("跟随模式 → 两个按钮", v["actions"], ("rate_down", "rate_up"))
+check("跟随模式 → 按钮文字", v["labels"], ("− 减慢", "＋ 加快"))
+check("跟随模式 → 提示", sub._hint_text(), "Shift+↓ 减慢 · Shift+↑ 加快")
+
+ov.mode = "classic"
+v = sub._view()
+check("经典模式 → kind", v["kind"], "block")
+check("经典模式 → 标题", v["title"], "方块长度")
+check("经典模式 → 两个按钮", v["actions"], ("block_down", "block_up"))
+check("经典模式 → 按钮文字", v["labels"], ("− 缩短", "＋ 拉长"))
+check("经典模式 → 提示", sub._hint_text(), "Shift+↓ 缩短 · Shift+↑ 拉长")
+
+ov.mode = "follow"
+ov.recording = True
+check("录音时即使 mode=follow 也算经典（画的是录音视图）",
+      sub._view()["kind"], "block")
+ov.recording = False
+
+print("[6] 点按钮：按当前模式改对应参数")
+ov.mode = "follow"
 ov.cfg["follow_rate"] = 1.0
-r_up = [r for r, a in sub._hit_buttons if a == "rate_up"][0]
-r_dn = [r for r, a in sub._hit_buttons if a == "rate_down"][0]
-sub.mousePressEvent(Ev(r_up.center().x(), r_up.center().y()))
-check("点 ＋ → 110%", ov.cfg["follow_rate"], 1.1)
-sub.mousePressEvent(Ev(r_up.center().x(), r_up.center().y()))
-check("再点 → 120%", ov.cfg["follow_rate"], 1.2)
-sub.mousePressEvent(Ev(r_dn.center().x(), r_dn.center().y()))
-check("点 − → 110%", ov.cfg["follow_rate"], 1.1)
-check("倍速写进了 config.json", hv.load_config().get("follow_rate"), 1.1)
+ov.cfg["leader_block_scale"] = 1.0
+click("rate_up")
+check("跟随模式点 ＋ → 倍速 110%", ov.cfg["follow_rate"], 1.1)
+check("同时块长没被动过", ov.cfg["leader_block_scale"], 1.0)
+click("rate_down")
+check("跟随模式点 − → 倍速 100%", ov.cfg["follow_rate"], 1.0)
+
+ov.mode = "classic"
+click("block_up")
+check("经典模式点 ＋ → 块长 110%", ov.cfg["leader_block_scale"], 1.1)
+check("同时倍速没被动过", ov.cfg["follow_rate"], 1.0)
+click("block_down")
+check("经典模式点 − → 块长 100%", ov.cfg["leader_block_scale"], 1.0)
+check("块长写进了 config.json", hv.load_config().get("leader_block_scale"), 1.0)
+
+ov.recording = True
+click("block_up")
+check("录音模式点 ＋ → 块长 110%", ov.cfg["leader_block_scale"], 1.1)
+ov.recording = False
+ov.cfg["leader_block_scale"] = 1.0
 
 print("[7] 悬停高亮")
+sub.grab()
+r_up = rect_of("block_up")
 sub.mouseMoveEvent(Ev(r_up.center().x(), r_up.center().y()))
-check("悬停 rate_up", sub.hover_action, "rate_up")
+check("悬停 block_up", sub.hover_action, "block_up")
 sub.mouseMoveEvent(Ev(84.0, 84.0))        # 空白处
 check("移开 → 取消高亮", sub.hover_action, None)
 
-print("[8] 极端倍速也能画（进度条不越界）")
-for rate in (0.2, 0.5, 1.0, 1.7, 2.0):
-    ov.cfg["follow_rate"] = rate
-    pm = sub.grab()
-    check("倍速 %d%% 重绘正常" % round(rate * 100), pm.width(), 168)
+print("[8] 极端值也能画（进度条不越界）")
+for kind in ("rate", "block"):
+    ov.mode = "follow" if kind == "rate" else "classic"
+    key = "follow_rate" if kind == "rate" else "leader_block_scale"
+    lo, hi = (0.2, 2.0) if kind == "rate" else (0.5, 2.0)
+    for val in (lo, (lo + hi) / 2, hi):
+        ov.cfg[key] = val
+        pm = sub.grab()
+        check("%s %.2f 重绘正常" % (kind, val), pm.width(), 168)
+ov.cfg["follow_rate"] = 1.0
+ov.cfg["leader_block_scale"] = 1.0
 
 print("[9] 主面板被压窄时也不会崩")
 ov.resize(420, 400)
 ov.sync_panel()
-pm = sub.grab()
-check("窄面板截图非空", pm.width(), sub.width())
+check("窄面板截图非空", sub.grab().width(), sub.width())
 ov.resize(880, 563)
 ov.sync_panel()
 
-print("[10] 跟随 / 经典模式切换都能画（跟随模式下才高亮）")
-ov.mode = "follow"
-pm1 = sub.grab()
-ov.mode = "classic"
-pm2 = sub.grab()
-check("两种模式都画得出来",
-      (pm1.width(), pm2.width()), (168, 168))
-
-print("[11] 面板穿透时小面板一起穿透（不抛异常）")
+print("[10] 面板穿透时小面板一起穿透（不抛异常）")
 ov.cfg["panel_interactive"] = False
 sub.apply_style()
 panel.apply_style()
@@ -158,7 +202,7 @@ sub.apply_style()
 panel.apply_style()
 check("穿透切换无异常", True, True)
 
-print("[12] 接缝 / 配色修复（v9.1）")
+print("[11] 接缝 / 配色修复（v9.1）")
 from PySide6.QtGui import QColor, QImage                       # noqa: E402
 
 BASE = QColor(10, 20, 30)
@@ -179,10 +223,6 @@ def render_on(widget):
 def rgb(img, x, y):
     return img.pixelColor(int(x), int(y)).getRgb()[:3]
 
-
-check("提示顺序：先'减慢'后'加快'",
-      sub._hint_text().index("减慢") < sub._hint_text().index("加快"), True)
-check("提示文字", sub._hint_text(), "Shift+↓ 减慢 · Shift+↑ 加快")
 
 ov.cfg["bg_alpha"] = 150
 sub_img = render_on(sub)
