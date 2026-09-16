@@ -106,14 +106,24 @@ print("[2] 经典模式：按住琴键不动、只切修饰键 → 三个音都�
 ov = build()
 fake.down = {VK_Z}
 ov._poll_input()
-check("按下 z → 消掉第 1 个音", ov.cursor, 1)
-fake.down = {VK_Z, VK_MID}              # 手指没松，切中键（1 → #1）
+check("按下 z → 进入「按住中」（还没消）",
+      (ov.held_press is not None and ov.held_press[1] == 0), True)
+fake.down = set()                       # 松手 → 这时才真正消掉（v9.3）
 ov._poll_input()
-check("切中键 → 第 2 个音也被消掉", ov.cursor, 2)
-fake.down = {VK_Z}                      # 松中键（#1 → 1）
+check("松手 → 第 1 个音消掉", (ov.cursor, ov.held_press), (1, None))
+fake.down = {VK_Z}                      # 第 2 个音（半音）也是按 z
 ov._poll_input()
-check("松中键 → 第 3 个音也被消掉", ov.cursor, 3)
-check("结束标记已置上", ov.finished_at is not None, True)
+check("再按住 z → 又进入按住中", ov.held_press is not None, True)
+fake.down = {VK_Z, VK_MID}              # 手指没松，切中键（本音 → 半音，又一个新音）
+ov._poll_input()
+check("按住不动切中键 → 前一个消掉、新的接上（光标到 2）", ov.cursor, 2)
+check("新的那个也在按住中", ov.held_press is not None, True)
+fake.down = {VK_Z}                      # 松中键（半音 → 本音，第三个新音）
+ov._poll_input()
+check("再切回来 → 第 3 个也消掉", ov.cursor, 3)
+fake.down = set()
+ov._poll_input()
+check("松手 → 结束标记已置上", ov.finished_at is not None, True)
 
 print("[3] 没按琴键时切修饰键 → 什么也不算")
 ov = build()
@@ -181,25 +191,34 @@ print("[8] 切音高但通道对不上谱面 → 红闪、不推进（与按错�
 ov = build(song_idx=1)
 fake.down = {VK_Z}
 ov._poll_input()
+fake.down = set()
+ov._poll_input()
 check("先消掉第 1 个音（ch0）", ov.cursor, 1)
 ov.wrong.clear()
-fake.down = {VK_Z, VK_MID}              # 下一个音是 ch1，却按着 z
+fake.down = {VK_Z}                      # 下一个音是 ch1，却按着 z
 ov._poll_input()
 check("不推进", ov.cursor, 1)
 check("该通道红闪", 0 in ov.wrong, True)
+check("更不会进入按住中", ov.held_press, None)
 
 print("[9] 开关关掉 → 退回旧行为（只有重新按琴键才算）")
 ov = build()
 ov.cfg["mod_change_note"] = False
 fake.down = {VK_Z}
 ov._poll_input()
-check("按一下还是照常消一个", ov.cursor, 1)
+fake.down = set()
+ov._poll_input()
+check("按一下再松手 → 照常消一个", ov.cursor, 1)
 fake.down = {VK_Z, VK_MID}
 ov._poll_input()
-check("切修饰键不再算新音", ov.cursor, 1)
+check("按住 + 切修饰键 → 光标不动（不算新音）", ov.cursor, 1)
+check("但当前这个音仍是「按住中」", ov.held_press is not None, True)
 fake.down = {VK_Z, VK_MID, VK_L}
 ov._poll_input()
 check("再切一个也不动", ov.cursor, 1)
+fake.down = set()
+ov._poll_input()
+check("松手 → 才推进到第 2 个", ov.cursor, 2)
 
 print("[10] 关掉输入读取时一切照旧（不炸）")
 ov = build()
@@ -208,14 +227,22 @@ ov._poll_input()
 check("不读输入时直接返回", ov.cursor, 0)
 ov._input_ok = True
 
-print("[11] 绘制不崩")
+print("[11] 绘制不崩（含「按住中」的状态）")
 ov = build(recording=True)
 fake.down = {VK_Z, VK_MID}
 ov._poll_input()
 ov.resize(760, 560)
 ov.show()
 pm = ov.grab()
-check("截图非空", (pm.width(), pm.height()), (760, 560))
+check("录音视图截图非空", (pm.width(), pm.height()), (760, 560))
+ov.recording = False
+fake.down = set()
+ov._poll_input()
+fake.down = {VK_Z}
+ov._poll_input()
+check("经典模式按住中", ov.held_press is not None, True)
+pm = ov.grab()
+check("「按住中」截图非空", (pm.width(), pm.height()), (760, 560))
 ov.close()
 
 hv.user32 = real_u32

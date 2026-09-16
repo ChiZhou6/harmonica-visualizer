@@ -366,6 +366,10 @@ DEFAULT_CONFIG = {
     # 经典模式音符块长度系数：0.5 ~ 2.0 = 50% ~ 200%（只缩放"长度"，宽度不变）。
     # 块的长度 = 拍数 × 单位长度，所以乘完长音仍按比例更长 —— 跟长短音无关，是整体缩放。
     "leader_block_scale": 1.0,
+    # 经典模式（v9.3 起）：弹对的块**不马上消失** —— 先变成半透明 + "按住中"的特效，
+    # 一直留到你**松开按键**才真正消掉。这样长音按住多久、块就留在那多久，
+    # 不会"手还没松、块已经没了"。false = 退回旧行为（按下瞬间就开始缩小消失）。
+    "leader_hold_until_release": True,
     # —— 跟随演奏模式参数 ——
     "follow_speed": 200.0,            # 音符下落速度（像素/秒）
     "follow_lead": 2.0,               # 倒计时结束后，第一个音到判定线还要多久（秒）
@@ -1512,6 +1516,9 @@ class Overlay(QWidget):
         self.slide = None             # (t0, 让位距离) 消除后的缓动
         self.ghost = None             # (t0, ch, state, height) 消除时的飞散残影
         self.finished_at = None
+        # 经典模式（v9.3）：已经弹对、但玩家**手还没松**的那个音。
+        # (t0, ch, state, dur)；期间块半透明 + "按住中"特效，松手才真正消掉。
+        self.held_press = None
 
         # 演奏模式：classic = 经典（堆叠消除）/ follow = 跟随演奏（按时值下落）
         self.mode = cfg.get("mode", "classic")
@@ -1612,6 +1619,7 @@ class Overlay(QWidget):
         self.cursor = 0
         self.slide = None
         self.ghost = None
+        self.held_press = None
         self.finished_at = None
         self.flashes.clear()
         self.impacts.clear()
@@ -1717,6 +1725,15 @@ class Overlay(QWidget):
                     self.held_mods.remove(role)
             self._prev_mod[role] = any_down
 
+        # 先处理"松手"，再处理"按下"（v9.3）：
+        # 按住中的块要到松手才真正消掉、光标才前进，所以必须让"松开 z"排在
+        # "按下 x"前面 —— 否则玩家快速连弹时（松 z 与按 x 落在同一个轮询周期），
+        # 遍历顺序稍有不同就会把 x 判成按错、白闪一下红。
+        for i, vk in enumerate(self.note_vks):
+            down, was = st.get(vk, False), self._prev.get(vk, False)
+            if was and not down:
+                self._on_note_release(i)
+
         for i, vk in enumerate(self.note_vks):
             down, was = st.get(vk, False), self._prev.get(vk, False)
             self.key_down[i] = down          # 长音要看"是不是还按着"，不能只看边沿
@@ -1809,23 +1826,61 @@ class Overlay(QWidget):
             self._follow_press(ch, now)
             return
         """只有"最靠近底部的那一个"块能被消除；按错键则该通道红闪"""
-        if self.finished_at is not None or self.cursor >= len(self.song.notes):
-            return
-        note = self.song.notes[self.cursor]
-        if note[2] != ch:
-            self.wrong[ch] = now
-            return
-        if self.cfg.get("leader_strict_modifier", False) and not self._mod_ok(note[3]):
-            self.wrong[ch] = now
-            return
-        h = self._leader_unit() * note[1]
-        self.ghost = (now, ch, note[3], h)
-        self.slide = (now, h + 6.0)
+        while True:
+            if self.finished_at is not None or self.cursor >= len(self.song.notes):
+                return
+            note = self.song.notes[self.cursor]
+            if note[2] != ch:
+                self.wrong[ch] = now
+                return
+            if self.cfg.get("leader_strict_modifier", False) and not self._mod_ok(note[3]):
+                self.wrong[ch] = now
+                return
+            if self.held_press is None:
+                break
+            # 上一个音还按着没松（= 按住琴键切修饰键，又一个新音头）：
+            # 先把上一个真正消掉、光标前进，再拿新的目标音重新判一遍
+            self._release_held(now)
+
         self.flashes[ch] = (now, note[3])
-        self.impacts.append((now, ch, note[3]))      # 消除碰撞特效
+        self.impacts.append((now, ch, note[3]))      # 命中反馈：灯带闪一下 + 碰撞光晕
+        if self.cfg.get("leader_hold_until_release", True):
+            # v9.3：命中的块**先不消** —— 留在原地变半透明 + "按住中"特效，
+            # 玩家手一松才真正消失（长音按住多久就留多久）
+            self.held_press = (now, ch, note[3], note[1])
+        else:
+            self._finish_note(now, ch, note[3], note[1])   # 旧行为：按下瞬间就开始消失
+
+    def _finish_note(self, now, ch, state, dur):
+        """真正消掉一个块：缩小淡出的残影 + 整叠平滑下落一层 + 光标前进"""
+        h = self._leader_unit() * dur
+        self.ghost = (now, ch, state, h)
+        self.slide = (now, h + 6.0)
         self.cursor += 1
         if self.cursor >= len(self.song.notes):
             self.finished_at = now
+
+    def _release_held(self, now=None):
+        """玩家松手（或按住键切音高、又来了一个新音头）→ 把"按住中"的块真正消掉。"""
+        hp = self.held_press
+        if hp is None:
+            return
+        self.held_press = None
+        if now is None:
+            now = time.monotonic()
+        _, ch, state, dur = hp
+        self._finish_note(now, ch, state, dur)
+
+    def _on_note_release(self, ch):
+        """琴键松手（v9.3）：经典模式下"按住中"的块这时才真正消失。
+
+        跟随模式的按住是它自己的时间轴在管（_follow_hold_tick），这里不掺和。
+        """
+        if self.mode == "follow":
+            return
+        hp = self.held_press
+        if hp is not None and hp[1] == ch:
+            self._release_held()
 
     # ---------- 跟随演奏模式 ----------
 
@@ -2338,6 +2393,48 @@ class Overlay(QWidget):
         p.setFont(QFont("Consolas", fsize, QFont.Bold))
         p.drawText(rect, Qt.AlignCenter, KEY_LABELS[ch])
 
+    def _draw_block_held(self, p, rect, state, ch, held):
+        """"按住中"的块（v9.3）：整体半透明 + 外描边随呼吸发亮 + 一道亮线在块内来回扫。
+
+        目的是让玩家一眼看出"这块是我正按着的、还没消，松手才会没"——
+        长音按住多久它就留在那多久，不会手还没松、块已经飞走了。
+        """
+        style = STATE_STYLE[state]
+        r = min(12.0, rect.height() / 2.0, rect.width() / 2.0)
+        base = QColor(style["fill"])
+
+        # 半透明底：一眼看出"它已经不是当前目标了，但还在"
+        fill = QColor(base)
+        fill.setAlpha(105)
+        p.setPen(Qt.NoPen)
+        p.setBrush(fill)
+        p.drawRoundedRect(rect, r, r)
+
+        # 呼吸（约 1.1 秒一个来回）
+        k = abs(((held * 0.9) % 2.0) - 1.0)              # 0 → 1 → 0
+        # 外描边：随呼吸由暗到亮
+        ring = QColor(base)
+        ring.setAlpha(int(110 + 130 * k))
+        p.setPen(QPen(ring, 2.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), r + 1.5, r + 1.5)
+
+        # 块内一道横向亮带上下扫 —— "还在按住"的动感（块越长行程越长）
+        if rect.height() > 12.0:
+            span = rect.height() - 6.0
+            yy = rect.bottom() - 3.0 - span * k
+            band = QColor(255, 255, 255, int(70 + 90 * k))
+            p.setPen(QPen(band, 2.0, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(rect.left() + 3.0, yy), QPointF(rect.right() - 3.0, yy))
+
+        # 按键字母继续显示（比常态暗一点）
+        fsize = int(max(10.0, min(rect.width() * 0.62, rect.height() * 0.5, 30.0)))
+        txt = QColor(style["text"])
+        txt.setAlpha(170)
+        p.setPen(txt)
+        p.setFont(QFont("Consolas", fsize, QFont.Bold))
+        p.drawText(rect, Qt.AlignCenter, KEY_LABELS[ch])
+
     def _leader_scale(self):
         """经典模式音符块长度系数（0.5 ~ 2.0 = 50% ~ 200%）。
 
@@ -2392,12 +2489,17 @@ class Overlay(QWidget):
                 self.slide = None
 
         y = hit_y - 4.0 + shift
+        now = time.monotonic()
+        hold = self.held_press
         for idx, (start, dur, ch, st) in enumerate(self.song.notes[self.cursor:]):
             bh = unit * dur
             rect = QRectF(x0 + ch * ch_w + ch_w * 0.22, y - bh, ch_w * 0.56, bh)
             if rect.bottom() < 0:
                 break
-            self._draw_block(p, rect, st, ch, highlight=(idx == 0))
+            if idx == 0 and hold is not None and hold[1] == ch:
+                self._draw_block_held(p, rect, st, ch, now - hold[0])
+            else:
+                self._draw_block(p, rect, st, ch, highlight=(idx == 0))
             y -= bh + gap
 
         if self.ghost:
@@ -3251,7 +3353,8 @@ if __name__ == "__main__":
         print("跟随倍速:", c.get("follow_rate"),
               "| 最短按住:", c.get("hold_min_seconds"), "秒",
               "| 经典方块长度:", c.get("leader_block_scale"),
-              "| 切音高算新音:", c.get("mod_change_note"))
+              "| 切音高算新音:", c.get("mod_change_note"),
+              "| 经典按住才消:", c.get("leader_hold_until_release"))
         print("keyboard_monitor:", c.get("keyboard_monitor"),
               "| panel_width:", c.get("panel_width"),
               "| panel_interactive:", c.get("panel_interactive"))

@@ -106,12 +106,18 @@ unit = ov._leader_unit()
 
 
 def ghost_h(ch, idx):
-    """按下第 idx 个音（必须是它自己通道的键）→ 读出消除动画用的块高"""
+    """按下再松开第 idx 个音（必须是它自己通道的键）→ 读出消除动画用的块高
+
+    v9.3 起经典模式是"按住才消"：按下只进入 held_press，**松手**才生成 ghost。
+    """
     ov.cursor = idx
     ov.finished_at = None
+    ov.held_press = None
     ov._on_note_press(ch)
+    ov._on_note_release(ch)
     h = ov.ghost[3]
     ov.ghost = None
+    ov.held_press = None
     return h
 
 
@@ -145,6 +151,7 @@ def render():
     ov._toast = None
     ov.slide = None
     ov.ghost = None
+    ov.held_press = None        # 本测试只看"块长"，按住中的状态一律清掉
     ov.impacts.clear()
     ov.flashes.clear()
     ov.wrong.clear()

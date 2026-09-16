@@ -226,15 +226,20 @@ check("按住状态清空", ov.follow_hold, None)
 check("fade 清空", len(ov.follow_fade), 0)
 check("回到 idle", ov.follow_state, "idle")
 
-print("[15] 经典模式完全不受影响（长音也是按一下即消）")
+print("[15] 经典模式不受跟随模式那套长按逻辑影响（v9.3 起是「按住才消」）")
 ov.mode = "classic"
 ov.cursor = 0
 ov.finished_at = None
+ov.held_press = None
 ov._on_note_press(0)
-check("经典模式立即消除", ov.cursor, 1)
-check("经典模式不会进入按住状态", ov.follow_hold, None)
+check("按下进入「按住中」，先不消", ov.cursor, 0)
+check("经典模式不会进入 follow_hold（那是跟随模式的）", ov.follow_hold, None)
+check("当前的按住状态是经典的 held_press", ov.held_press is not None, True)
+ov._on_note_release(0)                       # 松手 → 这时才真正消掉
+check("松手后消掉第 1 个音", ov.cursor, 1)
 ov._on_note_press(1)
-check("经典模式 3 拍音也是按一下即消", ov.cursor, 2)
+ov._on_note_release(1)
+check("3 拍音也是松手才消", ov.cursor, 2)
 
 print("[16] 绘制不崩（按住中的音）")
 ov.mode = "follow"
