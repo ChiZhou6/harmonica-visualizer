@@ -356,6 +356,11 @@ DEFAULT_CONFIG = {
     "loop": True,
     "keyboard_monitor": True,         # false = 完全不读取键鼠（纯视觉，热键也会失效）
     "leader_strict_modifier": False,  # 是否必须同时按住修饰键才算弹对
+    # v9.3：按住琴键不动、只切换鼠标修饰键（切音高）时，也算"一个新的音"。
+    # 游戏里这种弹法会重新起音（按住 z 切中键 = 1 → #1 → 1 三个音），而本程序
+    # 原来只有"琴键被按下"这一个事件源 → 经典模式会卡住不动、录音只录到第一个音。
+    # false = 退回旧行为（只有重新按琴键才算）。
+    "mod_change_note": True,
     # 演奏模式：classic = 经典（音符堆叠消除）；follow = 跟随演奏（音符按时值下落，音游式）
     "mode": "classic",
     # 经典模式音符块长度系数：0.5 ~ 2.0 = 50% ~ 200%（只缩放"长度"，宽度不变）。
@@ -1567,6 +1572,7 @@ class Overlay(QWidget):
                          | {v for combos in self.hotkey_vks.values() for c in combos for v in c})
         self._prev = {}
         self._prev_mod = {}
+        self._prev_state = 0          # 上一轮询周期的音调状态（切音高 = 一个新音，见 _mod_change_onsets）
         self._prev_hot = {}
         self._input_ok = bool(cfg.get("keyboard_monitor", True))
         self._last_detect = None      # (monotonic, 键名)
@@ -1696,16 +1702,10 @@ class Overlay(QWidget):
         if not self._input_ok:
             return
         st = {vk: bool(user32.GetAsyncKeyState(vk) & 0x8000) for vk in self._watched}
+        pressed_now = set()                  # 本周期刚按下的通道（切修饰键去重用）
 
-        for i, vk in enumerate(self.note_vks):
-            down, was = st.get(vk, False), self._prev.get(vk, False)
-            self.key_down[i] = down          # 长音要看"是不是还按着"，不能只看边沿
-            if down and not was:
-                if self.recording:
-                    self._record_note(i)      # 录音时不判定游戏，只记录
-                else:
-                    self._on_note_press(i)
-
+        # 先更新修饰键（音调状态），再判定本周期按下的琴键 ——
+        # 这样"同时按下中键 + 琴键"时，录下来的音高是切换后的那个，而不是上一周期的。
         for role, vks in self.mod_vk.items():
             any_down = any(st.get(v, False) for v in vks)
             if any_down and not self._prev_mod.get(role, False):
@@ -1716,6 +1716,18 @@ class Overlay(QWidget):
                 if role in self.held_mods:
                     self.held_mods.remove(role)
             self._prev_mod[role] = any_down
+
+        for i, vk in enumerate(self.note_vks):
+            down, was = st.get(vk, False), self._prev.get(vk, False)
+            self.key_down[i] = down          # 长音要看"是不是还按着"，不能只看边沿
+            if down and not was:
+                pressed_now.add(i)           # 本周期刚按下的通道（切修饰键时要跳过它们，免得算两个音）
+                if self.recording:
+                    self._record_note(i)      # 录音时不判定游戏，只记录
+                else:
+                    self._on_note_press(i)
+
+        self._mod_change_onsets(pressed_now)     # 切音高也当"一个新音"（v9.3）
 
         mono = time.monotonic()
         for action, combos in self.hotkey_vks.items():
@@ -1732,6 +1744,35 @@ class Overlay(QWidget):
                 break
 
         self._prev = st
+
+    # ---------- 切音高 = 一个新音（v9.3） ----------
+
+    def _mod_change_onsets(self, just_pressed):
+        """按住琴键不动、只切换鼠标修饰键时，也当成"该通道的键被按了一下"。
+
+        为什么需要：游戏里"按住琴键 + 切修饰键"会**重新起音**（按住 z 切中键就是
+        1 → #1 → 1 三个音）。而本程序原来只有"琴键被按下"这一个事件源：
+          · 经典模式：只被琴键的按下边沿推进 → 他弹到第 3、4 个音，程序还卡在第 2 个音；
+          · 录音：只记按下那一下 → 三个音只录成第一个。
+        所以这里把"音调状态发生了变化"补成一个新的音头：
+          · 录音中   → 记一个音（记下切换之后的音高）
+          · 经典模式 → 走 _on_note_press，等同于点了一下键（含 leader_strict_modifier 那道校验）
+          · 跟随模式 → 不动：它靠"按住不放自动接续同键连音"已经能过，再算一次会重复判定
+        同一个轮询周期里刚按下的通道会跳过，否则"按下中键 + 同时按下琴键"会被算成两个音。
+        """
+        st_now = self.current_state()
+        prev, self._prev_state = self._prev_state, st_now
+        if st_now == prev:
+            return
+        if not self.cfg.get("mod_change_note", True):
+            return
+        for ch in sorted(self.key_down):
+            if not self.key_down.get(ch, False) or ch in just_pressed:
+                continue
+            if self.recording:
+                self._record_note(ch)
+            elif self.mode != "follow":
+                self._on_note_press(ch)
 
     def _mod_ok(self, state):
         """该状态要求的修饰键是否都按住了（只有 leader_strict_modifier 打开时才强制）"""
@@ -3209,7 +3250,8 @@ if __name__ == "__main__":
         print("面板按钮:", ", ".join(a for row in PANEL_ROWS for a, _ in row))
         print("跟随倍速:", c.get("follow_rate"),
               "| 最短按住:", c.get("hold_min_seconds"), "秒",
-              "| 经典方块长度:", c.get("leader_block_scale"))
+              "| 经典方块长度:", c.get("leader_block_scale"),
+              "| 切音高算新音:", c.get("mod_change_note"))
         print("keyboard_monitor:", c.get("keyboard_monitor"),
               "| panel_width:", c.get("panel_width"),
               "| panel_interactive:", c.get("panel_interactive"))

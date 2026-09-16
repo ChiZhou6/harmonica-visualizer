@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """模拟"别人拿到 zip 之后的电脑"：
 
-1. 用 Python 解开 三角洲口琴曲谱_v9.2.zip（顺便验证中文文件名能正确还原）
+1. 用 Python 解开 三角洲口琴曲谱_v9.3.zip（顺便验证中文文件名能正确还原）
 2. **把 PATH 剥到只剩系统目录**（排除本机 venv 里 PySide6 的 DLL 帮忙）后启动 exe
 3. 检查窗口有没有画出来、自带曲谱有没有生成
 
@@ -81,7 +81,7 @@ def kill(pids):
 
 
 # ------------------------------------------------------------------ 1. 解压
-ZIP = r"D:\AI\DF Harmonica\三角洲口琴曲谱_v9.2.zip"
+ZIP = r"D:\AI\DF Harmonica\三角洲口琴曲谱_v9.3.zip"
 TMP = tempfile.mkdtemp(prefix="hv_zip_clean_")
 print("压缩包:", ZIP, "(%.1f MB)" % (os.path.getsize(ZIP) / 1048576))
 with zipfile.ZipFile(ZIP) as z:
