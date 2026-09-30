@@ -5,8 +5,10 @@
 
 ★ 不会在交付目录里直接跑：先把整个文件夹复制到临时目录再跑，
   否则退出时会用默认窗口位置覆盖用户辛苦对齐好的 config.json 里的 geometry。
-★ 顺便验证：把复制品里的 songs 文件夹删掉后启动，exe 能不能自己把自带曲谱
-  （含 See You Again）重新生成出来 —— 这同时证明"重新打包确实打进去了新曲谱"。
+★ 两个阶段一起验：
+  [阶段 1] 全新解压（songs + config.json 都没有）→ exe 应该自己把自带曲谱生成出来，
+           这同时证明"重新打包确实打进去了新曲谱"。
+  [阶段 2] 老用户（config.json 已经在）把曲谱全删掉再启动 → **不许补回来**。
 """
 import ctypes
 import json
@@ -84,39 +86,74 @@ SRC = r"D:\AI\DF Harmonica\三角洲口琴曲谱_发布版"
 TMP = tempfile.mkdtemp(prefix="hv_smoke_")
 D = os.path.join(TMP, "口琴曲谱")
 shutil.copytree(SRC, D)
-shutil.rmtree(os.path.join(D, "songs"), ignore_errors=True)      # 故意删掉曲谱文件夹
 exe = os.path.join(D, "三角洲口琴曲谱.exe")
-print("交付 exe:", exe)
-print("（已复制到临时目录，且故意删掉了 songs 文件夹）")
-
-proc = subprocess.Popen([exe], cwd=D)
-time.sleep(9)
-pids = {proc.pid} | {p for p, pp, _ in procs() if pp == proc.pid}
-titles = wins_of(pids)
-alive = proc.poll() is None
-
-print("进程:", pids, "｜ 还活着:", alive)
-print("可见窗口:", titles)
-
 songs_dir = os.path.join(D, "songs")
+cfg_path = os.path.join(D, "config.json")
+print("交付 exe:", exe)
+print("（已复制到临时目录，不在交付目录里跑）")
+
+
+def run_exe(seconds):
+    """启动交付 exe，等一会，返回 (进程还活着?, 可见窗口标题列表)，然后收掉进程"""
+    proc = subprocess.Popen([exe], cwd=D)
+    time.sleep(seconds)
+    pids = {proc.pid} | {p for p, pp, _ in procs() if pp == proc.pid}
+    titles = wins_of(pids)
+    alive = proc.poll() is None
+    kill(pids)
+    time.sleep(0.8)
+    return alive, titles
+
+
+# ---------- 阶段 1：全新解压（songs 和 config.json 都没有）----------
+# 这是"新用户下载解压后第一次打开"的场景：应该自动生成 config + 自带曲谱，
+# 顺便证明"重新打包确实把曲谱打进去了"。
+print("\n[阶段 1] 全新解压：删掉 songs 文件夹和 config.json 后启动")
+shutil.rmtree(songs_dir, ignore_errors=True)
+if os.path.exists(cfg_path):
+    os.remove(cfg_path)
+
+alive, titles = run_exe(9)
+print("  进程还活着:", alive)
+print("  可见窗口:", titles)
 have = sorted(os.listdir(songs_dir)) if os.path.isdir(songs_dir) else []
-print("自动生成的曲谱:", have)
-cfg_text = open(os.path.join(D, "config.json"), encoding="utf-8").read()
-print("config.json 里有 songs_dir 字段:", '"songs_dir"' in cfg_text)
+print("  自动生成的曲谱:", have)
+if os.path.isfile(cfg_path):
+    cfg_text = open(cfg_path, encoding="utf-8").read()
+    print("  config.json 里有 songs_dir 字段:", '"songs_dir"' in cfg_text)
 
-ok = (alive
-      and any("可视化曲谱" in t for t in titles)
-      and any("口琴曲谱" in t for t in titles)
-      and "See You Again.txt" in have
-      and "小星星.txt" in have
-      and "欢乐颂.txt" in have
-      and "父亲.txt" in have
-      and "音域与变调练习.txt" in have)
+WANT = ["See You Again.txt", "小星星.txt", "欢乐颂.txt", "父亲.txt", "音域与变调练习.txt"]
+ok1 = (alive
+       and any("可视化曲谱" in t for t in titles)
+       and any("口琴曲谱" in t for t in titles)
+       and all(n in have for n in WANT))
+print("  阶段 1:", "全新解压能正常启动、并自动补齐 5 首自带曲谱 ✓" if ok1
+      else "有问题 ✗（起不来 / 窗口没出来 / 曲谱没打进去）")
 
-print("结果:", "交付副本能正常启动、画出窗口、并把 5 首自带曲谱（含 See You Again / 父亲）重新生成 ✓"
-      if ok else "有问题 ✗")
+# ---------- 阶段 2：老用户把曲谱删了 → 不许再补回来 ----------
+# 本轮用户反馈的 bug：删掉默认曲谱，重开软件又被加回来。
+# 现在 config.json 已经存在（= 老用户），把曲谱全删掉再启动，目录应该保持为空。
+print("\n[阶段 2] 老用户场景：config.json 还在，把曲谱全删掉后重新启动")
+for n in list(os.listdir(songs_dir)) if os.path.isdir(songs_dir) else []:
+    if n.lower().endswith(".txt"):
+        os.remove(os.path.join(songs_dir, n))
+print("  启动前曲谱:", sorted(os.listdir(songs_dir)) if os.path.isdir(songs_dir) else [])
 
-proc.terminate()
+ok2 = False
+if os.path.isfile(cfg_path):
+    run_exe(8)
+    left = sorted(os.listdir(songs_dir)) if os.path.isdir(songs_dir) else []
+    print("  启动后曲谱:", left)
+    ok2 = (left == [])
+    print("  阶段 2:", "删掉的曲谱没有被补回来 ✓" if ok2
+          else "有问题 ✗（曲谱又自己回来了：%s）" % left)
+else:
+    print("  阶段 1 没能生成 config.json，无法模拟老用户 ✗")
+
+print("\n结果:",
+      "交付副本能正常启动、画出窗口、全新解压自动补齐曲谱、老用户删掉的曲谱不会再回来 ✓"
+      if (ok1 and ok2) else "有问题 ✗")
+sys.exit(0 if (ok1 and ok2) else 1)
 time.sleep(1.5)
 kill(pids)
 shutil.rmtree(TMP, ignore_errors=True)

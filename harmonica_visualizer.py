@@ -236,9 +236,23 @@ TITLE=See You Again
 }
 
 
+def song_files():
+    """曲谱目录里的 .txt 文件名（排序；目录读不到就返回空列表）"""
+    try:
+        return [n for n in sorted(os.listdir(SONGS_DIR)) if n.lower().endswith(".txt")]
+    except Exception:
+        return []
+
+
 def ensure_data_files():
-    """首次运行（含 exe）时自动生成 config.json 与示例曲谱"""
-    if not os.path.exists(CONFIG_PATH):
+    """首次运行（含 exe）时生成 config.json 与示例曲谱。
+
+    ⚠️ 示例曲谱**只在程序第一次运行时给一次**：之后用户删掉哪首（或者全删光），
+    都不会再自动补回来 —— 判断依据是 config.json 是否已存在（它由本函数在首次运行时创建）。
+    老用户升级上来时 config.json 已经在 → 目录里少了什么也不会被塞回去。
+    """
+    first_run = not os.path.exists(CONFIG_PATH)
+    if first_run:
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
@@ -246,10 +260,15 @@ def ensure_data_files():
             print("[config] 写入失败:", e)
     try:
         os.makedirs(SONGS_DIR, exist_ok=True)
-        for name, text in SAMPLE_SONGS.items():
-            path = os.path.join(SONGS_DIR, name)
-            if not os.path.exists(path):
-                with open(path, "w", encoding="utf-8") as f:
+    except Exception as e:
+        print("[songs] 写入失败:", e)
+        return
+    if not first_run:
+        return                              # 已经跑过：曲谱目录怎么增删都听用户的
+    try:
+        if not song_files():                # 目录里已经有曲谱就不插手（比如解压自带）
+            for name, text in SAMPLE_SONGS.items():
+                with open(os.path.join(SONGS_DIR, name), "w", encoding="utf-8") as f:
                     f.write(text)
     except Exception as e:
         print("[songs] 写入失败:", e)
@@ -682,22 +701,23 @@ def clean_song_body(text):
 
 def load_songs():
     songs = []
-    if os.path.isdir(SONGS_DIR):
-        for name in sorted(os.listdir(SONGS_DIR)):
-            if name.lower().endswith(".txt"):
-                path = os.path.join(SONGS_DIR, name)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    # 自动识别两种曲谱格式：Dr-hydra 曲谱库 tab 格式 / 我们自己的简谱格式
-                    if is_dfh_tab(content):
-                        songs.append(parse_dfh_tab(content, os.path.splitext(name)[0]))
-                    else:
-                        songs.append(parse_song(content, os.path.splitext(name)[0]))
-                except Exception as e:
-                    print("[曲谱] 读取失败:", path, e)
+    for name in song_files():
+        path = os.path.join(SONGS_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # 自动识别两种曲谱格式：Dr-hydra 曲谱库 tab 格式 / 我们自己的简谱格式
+            if is_dfh_tab(content):
+                songs.append(parse_dfh_tab(content, os.path.splitext(name)[0]))
+            else:
+                songs.append(parse_song(content, os.path.splitext(name)[0]))
+        except Exception as e:
+            print("[曲谱] 读取失败:", path, e)
     if not songs:
-        songs.append(parse_song("TITLE=内置示例\n1 1 5 5 6 6 5 -\n", "内置示例"))
+        # 曲谱文件夹是空的（用户自己全删了 / 还没放）→ 给一首**占位**曲谱，
+        # 免得列表和光标没东西可用。⚠️ 它只活在内存里、不写回磁盘，
+        # 所以"删掉的曲谱又自己回来"这种事不会再发生。
+        songs.append(parse_song("TITLE=（曲谱文件夹是空的）\n1 -\n", "（曲谱文件夹是空的）"))
     return songs
 
 
@@ -3317,6 +3337,9 @@ def main():
     QTimer.singleShot(200, ov._apply_clickthrough)
     QTimer.singleShot(220, panel.apply_style)
     QTimer.singleShot(240, sub.apply_style)
+    if not song_files():
+        # 曲谱被清空了：只提醒一句，**不补曲谱回来**（删掉的就该是删掉了）
+        QTimer.singleShot(700, lambda: ov._say("曲谱文件夹是空的：把 .txt 放进去就行"))
     print(SAFETY_NOTE)
     print("按键：%s" % " ".join(KEY_LABELS))
     print("热键（都要按住 Shift，避免和游戏里的 F 键抢键）：")

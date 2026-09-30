@@ -16,6 +16,11 @@ hv.CONFIG_PATH = os.path.join(TMP, "config.json")
 hv.SONGS_DIR = os.path.join(TMP, "songs")
 os.makedirs(hv.SONGS_DIR, exist_ok=True)
 
+# ⚠️ 真实曲谱文件的样本要**从仓库的 songs/ 目录读**（跟着仓库走），
+#    不要硬编码外部路径 —— 之前写的是用户手工整理的 E:/收纳盒/QQ/…，
+#    文件一挪走这个测试就整个崩掉（本轮踩到）。
+REPO_SONGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "songs")
+
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
@@ -123,15 +128,19 @@ check("miss 后 follow_next 前进", ov.follow_next >= 2, True)
 check("有 miss 记录", len(ov.follow_missed) > 0, True)
 
 print("[5] 两个真实曲谱文件的解析（念张师 / 春日影）")
-for path, want_n, want_bpm in [
-    (r"E:/收纳盒/QQ/念张师 主旋律.txt", 387, 135.0),
-    (r"E:/收纳盒/QQ/春日影（CRYCHIC ver.）干净无杂音,适合三角洲.txt", 593, 97.0),
+for name, want_n, want_bpm in [
+    ("念张师 主旋律.txt", 387, 135.0),
+    ("春日影（CRYCHIC ver.）干净无杂音,适合三角洲.txt", 593, 97.0),
 ]:
+    path = os.path.join(REPO_SONGS, name)
+    if not os.path.isfile(path):
+        check("样本曲谱存在（%s）" % name[:6], path, "存在")
+        continue
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
     ss = hv.parse_dfh_tab(text)
-    check("音符数 %s" % path.split("/")[-1][:6], len(ss.notes), want_n)
-    check("BPM %s" % path.split("/")[-1][:6], ss.bpm, want_bpm)
+    check("音符数 %s" % name[:6], len(ss.notes), want_n)
+    check("BPM %s" % name[:6], ss.bpm, want_bpm)
 
 print()
 print("结果:", "全部通过 ✓" if ok else "有失败 ✗")
